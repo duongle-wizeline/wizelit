@@ -8,6 +8,7 @@ from chainlit.types import ThreadDict
 from utils import create_chat_settings
 # Initialize database manager (one-time)
 db_manager = DatabaseManager()
+from llm import llm
 
 
 @cl.on_app_startup
@@ -34,9 +35,11 @@ async def on_chat_start():
 async def main(message: cl.Message):
     # Your custom logic goes here...
 
+    response = llm.invoke(message.content)
+
     # Send a response back to the user
     await cl.Message(
-        content=f"Received: {message.content}",
+        content=f"{response.content}",
     ).send()
 
 
