@@ -4,60 +4,11 @@ from typing import List, Dict, Optional
 from database import DatabaseManager
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 from chainlit.data.storage_clients.base import BaseStorageClient
-import asyncio
+from chainlit.types import ThreadDict
+from utils import create_chat_settings
 # Initialize database manager (one-time)
 db_manager = DatabaseManager()
 
-
-class AppConfig:
-    """
-    Central configuration for the application.
-    """
-
-    # Model configurations by provider
-    MODELS = {
-        "openai": [
-            "gpt-4o",
-            "gpt-4o-mini",
-            "gpt-4-turbo",
-            "gpt-3.5-turbo",
-        ],
-        "anthropic": [
-            "claude-sonnet-4-5-20250929",
-            "claude-sonnet-4-20250514",
-            "claude-opus-4-20250514",
-            "claude-haiku-4-5-20251001",
-        ],
-        "ollama": [
-            "llama3.3",
-            "llama3.2",
-            "mistral",
-            "mixtral",
-            "phi4",
-            "qwen2.5",
-        ],
-        "groq": [
-            "llama-3.3-70b-versatile",
-            "llama-3.1-70b-versatile",
-            "mixtral-8x7b-32768",
-            "gemma2-9b-it",
-        ],
-    }
-
-    def get_available_models(self, provider: str) -> List[str]:
-        """
-        Get available models for a provider.
-
-        Args:
-            provider: Provider name
-
-        Returns:
-            List of model names
-        """
-        return self.MODELS.get(provider.lower(), [])
-
-
-config = AppConfig()
 
 @cl.on_app_startup
 async def on_startup():
@@ -77,38 +28,7 @@ async def on_chat_start():
     app_user = cl.user_session.get("user")
     print(app_user)
     # Get user settings or use defaults
-    settings = await cl.ChatSettings(
-        [
-            cl.input_widget.Select(
-                id="model_provider",
-                label="AI Model Provider",
-                values=["openai", "anthropic", "ollama", "groq"],
-                initial_value="openai",
-            ),
-            cl.input_widget.Select(
-                id="model_name",
-                label="Model Name",
-                values=config.get_available_models("openai"),
-                initial_value="gpt-4o-mini",
-            ),
-            cl.input_widget.Slider(
-                id="temperature",
-                label="Temperature",
-                initial=0.7,
-                min=0,
-                max=2,
-                step=0.1,
-            ),
-            cl.input_widget.Slider(
-                id="max_tokens",
-                label="Max Tokens",
-                initial=2048,
-                min=256,
-                max=8192,
-                step=256,
-            ),
-        ]
-    ).send()
+    settings = await create_chat_settings().send()
 
 @cl.on_message
 async def main(message: cl.Message):
@@ -118,6 +38,43 @@ async def main(message: cl.Message):
     await cl.Message(
         content=f"Received: {message.content}",
     ).send()
+
+
+@cl.on_chat_resume
+async def on_chat_resume(thread: ThreadDict):
+    # Listen on_chat_resume event is required to let user continue the thread
+    # even we do nothing in this event.
+
+    # NOTE: The following logic just an example to extract messages from thread, you can customize it as you want
+    try:
+        settings = await create_chat_settings().send()
+        steps = thread.get("steps", [])
+        messages = []
+        print(steps)
+        for step in steps:
+            step_type = step.get("type")
+            content = (step.get("output") or "").strip()
+            if not content:
+                continue  # skip empty rows
+
+            if step_type == "user_message":
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": content,
+                    }
+                )
+            elif step_type == "assistant_message":
+                messages.append({
+                    "role": "assistant",
+                    "content": content,
+                })
+        print(messages)
+
+    except Exception as e:
+
+        print(f"\nError resuming chat: {e}")
+        cl.user_session.set("state", {"messages": []})
 
 
 # Authentication
