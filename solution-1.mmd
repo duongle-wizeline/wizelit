@@ -1,0 +1,19 @@
+flowchart TD
+    User[User] -->|Chat Interface| Wizelit[Wizelit Platform Chainlit + Main Agent + External Agents]
+
+    subgraph "The Ingestion Layer (Universal Wrapper)"
+        Wrapper[Standardized Agent Wrapper]
+    end
+
+    Wizelit -->|MCP Protocol / Tool| Wrapper
+
+    Wrapper -->|Type A: Sync Call Fast| Tool[Simple Tool / SQL / RAG]
+    Tool -->|Result Immediate| Wrapper
+    Wrapper -->|Result| Wizelit
+
+    Wrapper -->|Type B: Async Job Slow| JobMgr[Job Manager]
+    JobMgr -->|"Step 1: Start Job"| Script[Complex Script / Workflow]
+    JobMgr -.->|"Step 2: Return Job ID"| Wizelit
+    Wizelit -.->|"Step 3: Poll Status / Stream Logs"| JobMgr
+    Script -->|"Step 4: Job Complete"| JobMgr
+

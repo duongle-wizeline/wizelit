@@ -1,0 +1,32 @@
+flowchart TD
+
+    User([User]) -->|Chat Interface| Wizelit[Wizelit Platform]
+
+    subgraph "External Team: Marketing"
+        Adapter1[WizelitCrewAdapter]
+        Crew1[Marketing Crew]
+        Researcher1[Agent: Researcher]
+        Writer1[Agent: Writer]
+    end
+
+    subgraph "External Team: Legal"
+        Adapter2[WizelitCrewAdapter]
+        Crew2[Legal Crew]
+        Analyst2[Agent: Analyst]
+    end
+
+    %% Connections
+    Wizelit -->|Step 1: Kickoff Crew Task| Adapter1
+    Adapter1 -->|Step 2: Start Crew| Crew1
+    Crew1 -->|Delegation| Researcher1
+    Researcher1 -->|Delegation| Writer1
+
+    %% The Critical Feedback Loop
+    Researcher1 -.->|Stream: 'Searching Google...'| Adapter1
+    Writer1 -.->|Stream: 'Drafting Copy...'| Adapter1
+    Adapter1 -.->|Step 3: Real-time Log Stream| Wizelit
+
+    %% Result
+    Crew1 -->|Final Output| Adapter1
+    Adapter1 -->|Step 4: Final Result| Wizelit
+
