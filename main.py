@@ -1,5 +1,6 @@
+import uuid
 import chainlit as cl
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 class AppConfig:
     """
@@ -48,6 +49,7 @@ class AppConfig:
         """
         return self.MODELS.get(provider.lower(), [])
 
+
 config = AppConfig()
 
 @cl.on_chat_start
@@ -56,6 +58,10 @@ async def on_chat_start():
     Called when a new chat session starts.
     Initialize user's AI agent based on their preferences.
     """
+    session_id = str(uuid.uuid4())
+    cl.user_session.set("session_id", session_id)
+    app_user = cl.user_session.get("user")
+    print(app_user)
     # Get user settings or use defaults
     settings = await cl.ChatSettings(
         [
@@ -98,3 +104,22 @@ async def main(message: cl.Message):
     await cl.Message(
         content=f"Received: {message.content}",
     ).send()
+
+
+# Authentication
+@cl.oauth_callback
+def oauth_callback(
+    provider_id: str,
+    token: str,
+    raw_user_data: Dict[str, str],
+    default_user: cl.User,
+) -> Optional[cl.User]:
+    print(raw_user_data)
+    if provider_id == "google" and raw_user_data["hd"] == "wizeline.com":
+        default_user.display_name = raw_user_data["name"]
+        default_user.metadata.update({
+            "name": raw_user_data["name"],
+        })
+        return default_user
+
+    return None
