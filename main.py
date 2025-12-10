@@ -1,6 +1,13 @@
 import uuid
 import chainlit as cl
 from typing import List, Dict, Optional
+from database import DatabaseManager
+from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
+from chainlit.data.storage_clients.base import BaseStorageClient
+import asyncio
+# Initialize database manager (one-time)
+db_manager = DatabaseManager()
+
 
 class AppConfig:
     """
@@ -51,6 +58,13 @@ class AppConfig:
 
 
 config = AppConfig()
+
+@cl.on_app_startup
+async def on_startup():
+    """
+    Initialize database before the Chainlit app starts accepting connections.
+    """
+    await db_manager.init_db()
 
 @cl.on_chat_start
 async def on_chat_start():
@@ -123,3 +137,12 @@ def oauth_callback(
         return default_user
 
     return None
+
+@cl.data_layer
+def get_data_layer():
+    """
+    Return chainlit's SQLAlchemyDataLayer.
+    Note: This must be synchronous. Chainlit's SQLAlchemyDataLayer
+    creates its own synchronous engine, so we use the sync connection string.
+    """
+    return SQLAlchemyDataLayer(conninfo=db_manager.DATABASE_URL, storage_provider=BaseStorageClient)
