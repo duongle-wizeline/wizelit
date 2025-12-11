@@ -1,15 +1,20 @@
+import logging
 import uuid
+from typing import Dict, Optional
+
 import chainlit as cl
-from typing import List, Dict, Optional
-from database import DatabaseManager
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 from chainlit.data.storage_clients.base import BaseStorageClient
 from chainlit.types import ThreadDict
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+
+from agent import agent_runtime
+from database import DatabaseManager
 from utils import create_chat_settings
-from graph import graph
 
 # Initialize database manager (one-time)
 db_manager = DatabaseManager()
+logger = logging.getLogger(__name__)
 
 
 @cl.on_app_startup
@@ -18,6 +23,7 @@ async def on_startup():
     Initialize database before the Chainlit app starts accepting connections.
     """
     await db_manager.init_db()
+    await agent_runtime.ensure_ready()
 
 @cl.on_chat_start
 async def on_chat_start():
@@ -30,26 +36,29 @@ async def on_chat_start():
     app_user = cl.user_session.get("user")
     print(app_user)
     # Get user settings or use defaults
-    settings = await create_chat_settings().send()
+    await create_chat_settings().send()
 
 @cl.on_message
 async def main(message: cl.Message):
-    # Your custom logic goes here...
-    config = {"configurable": {"thread_id": "wizelit123"}}
-    steps = graph.stream(
-        {"messages": [{"role": "user", "content": message.content}]},
-        stream_mode="values",
-        config=config,
-    )
+    session_id = cl.user_session.get("session_id")
+    if not session_id:
+        session_id = str(uuid.uuid4())
+        cl.user_session.set("session_id", session_id)
 
-    response = f"{list(steps)[-1]["messages"][-1].content}"
+    graph = await agent_runtime.get_graph()
+    config = {"configurable": {"thread_id": session_id}}
 
-    print(f'Response: {response}')
+    try:
+        result = await graph.ainvoke(
+            {"messages": [HumanMessage(content=message.content)]},
+            config=config,
+        )
+        response = _extract_response(result.get("messages", []))
+    except Exception:  # noqa: BLE001
+        logger.exception("Unable to generate response")
+        response = "I ran into an internal error while processing that request."
 
-    # Send a response back to the user
-    await cl.Message(
-        content=f"{response}",
-    ).send()
+    await cl.Message(content=response).send()
 
 
 @cl.on_chat_resume
@@ -59,29 +68,20 @@ async def on_chat_resume(thread: ThreadDict):
 
     # NOTE: The following logic just an example to extract messages from thread, you can customize it as you want
     try:
-        settings = await create_chat_settings().send()
+        await create_chat_settings().send()
         steps = thread.get("steps", [])
-        messages = []
-        print(steps)
+        restored: list[BaseMessage] = []
         for step in steps:
             step_type = step.get("type")
             content = (step.get("output") or "").strip()
             if not content:
-                continue  # skip empty rows
+                continue
 
             if step_type == "user_message":
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": content,
-                    }
-                )
+                restored.append(HumanMessage(content=content))
             elif step_type == "assistant_message":
-                messages.append({
-                    "role": "assistant",
-                    "content": content,
-                })
-        print(messages)
+                restored.append(AIMessage(content=content))
+        cl.user_session.set("history", restored)
 
     except Exception as e:
 
@@ -115,3 +115,22 @@ def get_data_layer():
     creates its own synchronous engine, so we use the sync connection string.
     """
     return SQLAlchemyDataLayer(conninfo=db_manager.DATABASE_URL, storage_provider=BaseStorageClient)
+
+
+def _extract_response(messages: list[BaseMessage]) -> str:
+    for message in reversed(messages):
+        if isinstance(message, AIMessage):
+            content = message.content
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        parts.append(block.get("text", ""))
+                    else:
+                        parts.append(str(block))
+                return "\n".join(filter(None, parts))
+            return str(content)
+
+    return "I couldn't find a response to share yet."
