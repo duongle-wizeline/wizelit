@@ -6,6 +6,8 @@ from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 from chainlit.data.storage_clients.base import BaseStorageClient
 from chainlit.types import ThreadDict
 from utils import create_chat_settings
+from graph import graph
+
 # Initialize database manager (one-time)
 db_manager = DatabaseManager()
 
@@ -33,10 +35,20 @@ async def on_chat_start():
 @cl.on_message
 async def main(message: cl.Message):
     # Your custom logic goes here...
+    config = {"configurable": {"thread_id": "wizelit123"}}
+    steps = graph.stream(
+        {"messages": [{"role": "user", "content": message.content}]},
+        stream_mode="values",
+        config=config,
+    )
+
+    response = f"{list(steps)[-1]["messages"][-1].content}"
+
+    print(f'Response: {response}')
 
     # Send a response back to the user
     await cl.Message(
-        content=f"Received: {message.content}",
+        content=f"{response}",
     ).send()
 
 
