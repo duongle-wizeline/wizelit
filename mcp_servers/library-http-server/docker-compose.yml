@@ -1,0 +1,40 @@
+services:
+  library-http-server:
+    build: .
+    image: library-http-server:latest
+    container_name: library_http_server
+    # Expose port to other services in the compose network; do not publish to host.
+    expose:
+      - "1337"
+    environment:
+      - NODE_ENV=production
+    restart: unless-stopped
+    healthcheck:
+      # TCP check using Node to verify the service is listening on port 1337.
+      # This avoids HTTP status-code issues (some MCP endpoints return 400 without a session).
+      test: ["CMD", "node", "-e", "const net=require('net'); const s=net.createConnection(1337,'127.0.0.1'); s.on('connect',()=>process.exit(0)); s.on('error',()=>process.exit(1)); setTimeout(()=>process.exit(1),3000);"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  nginx:
+    image: nginx:stable
+    container_name: library_http_nginx
+    ports:
+      - "443:443"
+      - "80:80"
+    depends_on:
+      - library-http-server
+    restart: unless-stopped
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./localhost+2.pem:/etc/ssl/certs/localhost+2.pem:ro
+      - ./localhost+2-key.pem:/etc/ssl/private/localhost+2-key.pem:ro
+    healthcheck:
+      # Simple GET request; any response means the server is up
+      test: ["CMD-SHELL", "curl -s https://localhost/ > /dev/null 2>&1 || true && exit 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 1
+      start_period: 5s
