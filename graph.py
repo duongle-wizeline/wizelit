@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Iterable, Sequence
 
 from langchain_core.language_models import BaseLanguageModel
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, AIMessage
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, MessagesState, StateGraph
@@ -22,25 +22,27 @@ def build_graph(
 
     async def query_or_respond(state: MessagesState):
         """Let the model decide whether it needs to call a tool."""
-
         history = state.get("messages", [])
         response = await llm_with_tools.ainvoke(history)
         return {"messages": [response]}
 
     async def generate(state: MessagesState):
         """Generate the final answer using any newly retrieved context."""
-
+        
+        # 1. Capture Tool Outputs
         tool_messages = _gather_recent_tool_messages(state.get("messages", []))
         docs_content = "\n\n".join(_stringify_tool_message(msg) for msg in tool_messages)
+        
+        # 2. STRICT System Prompt
         system_message_content = (
-            "You are an assistant for question-answering tasks. "
-            "Use the following pieces of retrieved context to answer "
-            "the question. If you don't know the answer, say that you "
-            "don't know. Use three sentences maximum and keep the "
-            "answer concise."
-            f"\n\n{docs_content}"
-            if docs_content
-            else "You are a concise assistant. Keep responses short and factual."
+            "You are Wizelit, an Engineering Manager. "
+            "You CANNOT write or refactor code yourself. "
+            "Your ONLY job is to delegate tasks to the 'Refactoring Crew'.\n\n"
+            "CRITICAL RULES:\n"
+            "1. If you receive a 'JOB_ID' from a tool, you must ONLY output that ID.\n"
+            "2. Do NOT write python code. Do NOT explain the refactoring.\n"
+            "3. Format your response exactly like this: 'I have started the job. JOB_ID: <the_id>.'\n"
+            f"\n\nCONTEXT FROM TOOLS:\n{docs_content}"
         )
 
         conversation_messages = [
@@ -49,7 +51,9 @@ def build_graph(
             if message.type in ("human", "system")
             or (message.type == "ai" and not message.tool_calls)
         ]
-        prompt = [SystemMessage(system_message_content)] + conversation_messages
+        
+        # Force the System Prompt to be the last thing the model considers
+        prompt = [SystemMessage(content=system_message_content)] + conversation_messages
         response = await llm.ainvoke(prompt)
         return {"messages": [response]}
 
@@ -88,16 +92,4 @@ def _stringify_tool_message(message) -> str:
     content = getattr(message, "content", "")
     if isinstance(content, str):
         return content
-    if isinstance(content, list):
-        parts = []
-        for block in content:
-            if isinstance(block, dict):
-                text = block.get("text")
-                if text:
-                    parts.append(text)
-                else:
-                    parts.append(str(block))
-            else:
-                parts.append(str(block))
-        return "\n".join(parts)
     return str(content)
