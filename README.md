@@ -27,10 +27,8 @@ The Chainlit agent expects an MCP server that exposes its tools over HTTP:
 To run the reference server included in this repo:
 
 ```
-cd mcp_servers/library-http-server
-npm install
-npm run build
-node dist/index.js
+cd mcp_servers/fastmcp-http-server
+fastmcp run main.py:mcp --transport http --port 1337
 ```
 
 Once the server is running, Chainlit will automatically discover the available MCP tools and expose them to the internal LLM.

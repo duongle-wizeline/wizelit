@@ -1,29 +1,8 @@
-import { MCPTool } from "mcp-framework";
-import { z } from "zod";
+from fastmcp import FastMCP
 
-interface BooksInput {
-  message: string;
-}
+mcp = FastMCP("A Simple MCP Server")
 
-class BooksTool extends MCPTool<BooksInput> {
-  name = "list_books";
-  description = "Best Books of the 21st Century";
-
-  schema = {
-    // message: {
-    //   type: z.string(),
-    //   description: "Message to process",
-    // },
-  };
-
-  async execute() {
-    return {
-        books: Books
-    };
-  }
-}
-
-const Books = [
+Books = [
     {
         "Rank": 1,
         "Title": "My Brilliant Friend (Neapolitan Novels, No. 1)",
@@ -206,4 +185,9 @@ const Books = [
     }
 ]
 
-export default BooksTool;
+@mcp.tool
+def get_books() -> dict[str, list[dict[str, any]]]:
+    return { "books": Books }
+
+if __name__ == "__main__":
+    mcp.run(transport="http", port=1337)
