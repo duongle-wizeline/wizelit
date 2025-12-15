@@ -103,7 +103,7 @@ async def main(message: cl.Message):
 async def on_chat_resume(thread: ThreadDict):
     # Listen on_chat_resume event is required to let user continue the thread
     # even we do nothing in this event.
-    print(f"Chat resumed: {thread}")
+    pass
 
 @cl.oauth_callback
 def oauth_callback(provider_id: str, token: str, raw_user_data: Dict[str, str], default_user: cl.User) -> Optional[cl.User]:
