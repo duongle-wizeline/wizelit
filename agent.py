@@ -63,6 +63,11 @@ class AgentRuntime:
             await self.ensure_ready()
         return self._graph
     
+    async def graph_to_mermaid(self) -> str:
+        """Convert the graph to a Mermaid string."""
+        computed_graph = await self.get_graph()
+        return computed_graph.get_graph().draw_mermaid()
+    
     # Allow calling tools directly (for polling)
     async def call_tool(self, name: str, arguments: dict):
         if self._session is None:
