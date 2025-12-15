@@ -1,2 +1,5 @@
 mcp
 uvicorn
+langchain-aws
+boto3
+crewai

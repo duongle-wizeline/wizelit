@@ -19,4 +19,5 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "langchain-mcp-adapters>=0.2.1",
     "fastmcp>=2.14.0",
+    "crewai>=1.6.1",
 ]

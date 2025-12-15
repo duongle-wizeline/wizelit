@@ -13,7 +13,6 @@ from agent import agent_runtime
 from database import DatabaseManager
 from utils import create_chat_settings
 
-# Initialize database manager
 db_manager = DatabaseManager()
 logger = logging.getLogger(__name__)
 
@@ -42,55 +41,50 @@ async def main(message: cl.Message):
         )
         response_text = _extract_response(result.get("messages", []))
 
-        # 2. Check for Job ID (The Async Handshake)
-        # UPDATED REGEX: Handles spaces (\s*) and captures the ID accurately
+        # 2. Check for Job ID
         job_match = re.search(r"JOB_ID:\s*(JOB-[\w-]+)", response_text)
         
         if job_match:
             job_id = job_match.group(1)
-            
-            # Announce the tracking
-            await cl.Message(content=f"👨‍✈️ **Captain:** Dispatching Refactoring Crew... (ID: `{job_id}`)").send()
+            await cl.Message(content=f"👨‍✈️ **Captain:** Dispatching Crew... (ID: `{job_id}`)").send()
 
-            # 3. Start the "Glass Box" UI (Streaming Logs)
             async with cl.Step(name="Refactoring Crew", type="run") as step:
                 step.input = "Initializing Agent Swarm..."
                 await step.update()
 
-                # Polling Loop (Max 60 seconds)
-                for _ in range(30):
-                    await asyncio.sleep(2)
+                last_logs = ""
+                # Poll for 60 seconds
+                for _ in range(60):
+                    await asyncio.sleep(1)
                     
-                    # Ask the graph to check status
-                    # We send a hidden prompt to the LLM to call 'get_job_status'
-                    status_msg = HumanMessage(content=f"Use the 'get_job_status' tool to check status for {job_id}. Just output the result.")
-                    status_res = await graph.ainvoke({"messages": [status_msg]}, config=config)
-                    status_raw = _extract_response(status_res.get("messages", []))
+                    # Call tool via agent_runtime (Reuse existing connection)
+                    try:
+                        tool_result = await agent_runtime.call_tool(
+                            "get_job_status",
+                            {"job_id": job_id},
+                        )
+                        # Extract text
+                        status_raw = tool_result.content[0].text
+                    except Exception as e:
+                        status_raw = f"Error polling: {e}"
 
-                    # Parse the Logs
+                    # Update UI
                     if "LOGS:" in status_raw:
-                        # Extract everything between LOGS: and the end (or RESULT:)
                         clean_logs = status_raw.split("LOGS:")[1].split("RESULT:")[0].strip()
-                        step.output = clean_logs # Update the UI bubble
-                        await step.update()
+                        if clean_logs and clean_logs != last_logs:
+                            step.output = clean_logs
+                            await step.update()
+                            last_logs = clean_logs
 
-                    # Check for Completion
                     if "STATUS: COMPLETED" in status_raw:
-                        # Extract the code block
-                        try:
-                            final_code = status_raw.split("RESULT:")[1].strip()
-                        except IndexError:
-                            final_code = status_raw # Fallback
-                            
-                        await cl.Message(content=f"✅ **Refactoring Complete!**\n\n{final_code}").send()
+                        final_code = status_raw.split("RESULT:")[1].strip() if "RESULT:" in status_raw else status_raw
+                        await cl.Message(content=f"✅ **Done!**\n\n{final_code}").send()
                         return
                     
                     if "STATUS: FAILED" in status_raw:
-                        await cl.Message(content="❌ **Job Failed.** Please check logs.").send()
+                        await cl.Message(content="❌ **Job Failed.**").send()
                         return
-            
         else:
-            # Normal conversation (No job started)
             await cl.Message(content=response_text).send()
 
     except Exception as e:
@@ -109,6 +103,6 @@ def get_data_layer():
 
 def _extract_response(messages: list[BaseMessage]) -> str:
     for message in reversed(messages):
-        if isinstance(message, AIMessage):
+        if isinstance(message, AIMessage) and message.content:
             return str(message.content)
     return ""

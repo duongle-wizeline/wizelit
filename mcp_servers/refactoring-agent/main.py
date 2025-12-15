@@ -1,10 +1,16 @@
 import asyncio
 import uuid
-from typing import Dict, Any, List
+import os
+from typing import Dict, Any
+
+# FastMCP
 from mcp.server.fastmcp import FastMCP
 
-# --- CHANGE HERE: Configure port in the constructor ---
-# We also remove 'dependencies' as asyncio is built-in and often doesn't need declaring
+# Bedrock
+from langchain_aws import ChatBedrock
+from langchain_core.messages import SystemMessage, HumanMessage
+
+# Initialize FastMCP
 mcp = FastMCP("RefactoringCrewAgent", port=1337)
 
 # In-Memory Job Store
@@ -12,94 +18,93 @@ JOBS: Dict[str, Dict[str, Any]] = {}
 
 async def _run_refactoring_crew(job_id: str, code: str, instruction: str):
     """
-    Simulates the 'Slow' work. In production, this would call CrewAI.kickoff().
+    Refactor code using AWS Bedrock (Claude) in two steps:
+    1) Architect-style analysis + plan
+    2) Code-only refactor output
+
+    NOTE: This intentionally avoids CrewAI's default LLM loader, which may
+    fall back to OpenAI and require OPENAI_API_KEY.
     """
     try:
         job = JOBS[job_id]
         
-        # Step 1: Analysis
-        await asyncio.sleep(2) 
-        job["logs"].append(f"[Architect] Analyzing code structure for: {instruction}...")
-        
-        await asyncio.sleep(2)
-        job["logs"].append(f"[Architect] Found 'God Object' anti-pattern in the snippet.")
-        
-        # Step 2: Planning
-        await asyncio.sleep(2)
-        job["logs"].append(f"[TechLead] Drafting refactoring plan: Extracting 'PaymentLogic' class.")
-        
-        # Step 3: Coding
-        await asyncio.sleep(3)
-        job["logs"].append(f"[Coder] Writing Pydantic models...")
-        
-        # Step 4: Completion
-        final_code = f"""
-# REFACTORED CODE (Based on: {instruction})
-from pydantic import BaseModel
+        # 1. Initialize the LLM (Bedrock)
+        llm = ChatBedrock(
+            model_id=os.getenv("CHAT_MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0"),
+            model_kwargs={"temperature": 0},
+            region_name=os.getenv("AWS_DEFAULT_REGION", "ap-southeast-2"),
+        )
 
-class RefactoredModel(BaseModel):
-    # Logic extracted from your legacy code
-    id: str
-    amount: float
+        def _content(msg) -> str:
+            content = getattr(msg, "content", "")
+            return content if isinstance(content, str) else str(content)
 
-def process_payment(data: RefactoredModel):
-    '''Processed safely.'''
-    return True
-"""
+        job["logs"].append("🧠 Starting analysis the code...")
+
+        analysis_prompt = (
+            "Analyze the following Python code according to the user's instruction.\n"
+            "Identify the top 3 critical issues (e.g., global state, lack of typing, tight coupling, poor naming).\n"
+            "Then propose a short refactoring plan.\n\n"
+            f"INSTRUCTION:\n{instruction}\n\n"
+            f"CODE:\n{code}\n"
+        )
+
+        analysis_msg = await asyncio.to_thread(
+            llm.invoke,
+            [SystemMessage(content="You are a Senior Software Architect who prioritizes SOLID and clean architecture."),
+             HumanMessage(content=analysis_prompt)],
+        )
+        analysis_text = _content(analysis_msg).strip()
+        job["logs"].append("🧩 Analysis completed. Refactoring the code...")
+
+        refactor_prompt = (
+            "Refactor the code based on the architect analysis and the instruction.\n"
+            "Use Python type hints and (only when appropriate) Pydantic models.\n"
+            "Output ONLY the Python code. Do NOT wrap with markdown backticks.\n\n"
+            f"INSTRUCTION:\n{instruction}\n\n"
+            f"ARCHITECT ANALYSIS:\n{analysis_text}\n\n"
+            f"CODE:\n{code}\n"
+        )
+
+        refactor_msg = await asyncio.to_thread(
+            llm.invoke,
+            [SystemMessage(content="You are a Senior Python Developer. Return only valid Python code."),
+             HumanMessage(content=refactor_prompt)],
+        )
+        final_code = _content(refactor_msg).strip()
+        
         job["result"] = final_code
         job["status"] = "completed"
-        job["logs"].append("[System] Job Finished.")
+        job["logs"].append("✅ Refactor completed successfully.")
         
     except Exception as e:
-        JOBS[job_id]["status"] = "failed"
-        JOBS[job_id]["error"] = str(e)
-
-# --- TOOL 1: The Trigger ---
+        job["status"] = "failed"
+        job["error"] = str(e)
+        job["logs"].append(f"❌ [System] Error: {str(e)}")
 
 @mcp.tool()
 async def start_refactoring_job(code_snippet: str, instruction: str) -> str:
-    """
-    Submits a Python code snippet to the Engineering Crew for refactoring.
-    Returns a Job ID immediately (does not wait for completion).
-    """
     job_id = f"JOB-{str(uuid.uuid4())[:8]}"
-    
-    # Initialize Job State
     JOBS[job_id] = {
         "status": "running",
-        "logs": ["Job submitted. Waiting for crew..."],
+        "logs": ["Job submitted to Bedrock..."],
         "result": None
     }
-    
-    # Start the background task (Fire and Forget)
     asyncio.create_task(_run_refactoring_crew(job_id, code_snippet, instruction))
-    
     return f"JOB_ID:{job_id}"
-
-# --- TOOL 2: The Poller ---
 
 @mcp.tool()
 async def get_job_status(job_id: str) -> str:
-    """
-    Checks the status of a refactoring job. Returns logs or the final result.
-    """
     clean_id = job_id.replace("JOB_ID:", "").strip()
-    
     job = JOBS.get(clean_id)
-    if not job:
-        return "Error: Job ID not found."
+    if not job: return "Error: Job ID not found."
 
     if job["status"] == "running":
-        # Return the last few logs to simulate streaming
-        recent_logs = "\n".join(job["logs"][-3:])
-        return f"STATUS: RUNNING\nLOGS:\n{recent_logs}"
-    
+        return f"STATUS: RUNNING\nLOGS:\n{job['logs'][-1]}"
     elif job["status"] == "completed":
         return f"STATUS: COMPLETED\nRESULT:\n{job['result']}"
-    
     else:
         return f"STATUS: FAILED\nERROR: {job.get('error')}"
 
 if __name__ == "__main__":
-    # "http" is invalid. Use "streamable-http" (standard) or "sse"
-    mcp.run(transport="streamable-http")
+    mcp.run(transport="sse")
