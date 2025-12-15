@@ -7,6 +7,7 @@ from typing import Dict, Optional
 import chainlit as cl
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 from chainlit.data.storage_clients.base import BaseStorageClient
+from chainlit.types import ThreadDict
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from agent import agent_runtime
@@ -43,7 +44,7 @@ async def main(message: cl.Message):
 
         # 2. Check for Job ID
         job_match = re.search(r"JOB_ID:\s*(JOB-[\w-]+)", response_text)
-        
+
         if job_match:
             job_id = job_match.group(1)
             await cl.Message(content=f"👨‍✈️ **Captain:** Dispatching Crew... (ID: `{job_id}`)").send()
@@ -56,7 +57,7 @@ async def main(message: cl.Message):
                 # Poll for 60 seconds
                 for _ in range(60):
                     await asyncio.sleep(1)
-                    
+
                     # Call tool via agent_runtime (Reuse existing connection)
                     try:
                         tool_result = await agent_runtime.call_tool(
@@ -80,7 +81,7 @@ async def main(message: cl.Message):
                         final_code = status_raw.split("RESULT:")[1].strip() if "RESULT:" in status_raw else status_raw
                         await cl.Message(content=f"✅ **Done!**\n\n{final_code}").send()
                         return
-                    
+
                     if "STATUS: FAILED" in status_raw:
                         await cl.Message(content="❌ **Job Failed.**").send()
                         return
@@ -90,6 +91,13 @@ async def main(message: cl.Message):
     except Exception as e:
         logger.exception("Error in main loop")
         await cl.Message(content=f"An error occurred: {str(e)}").send()
+
+
+@cl.on_chat_resume
+async def on_chat_resume(thread: ThreadDict):
+    # Listen on_chat_resume event is required to let user continue the thread
+    # even we do nothing in this event.
+    pass
 
 @cl.oauth_callback
 def oauth_callback(provider_id: str, token: str, raw_user_data: Dict[str, str], default_user: cl.User) -> Optional[cl.User]:

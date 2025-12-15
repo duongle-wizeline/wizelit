@@ -4,14 +4,13 @@ import os
 from typing import Dict, Any
 
 # FastMCP
-from mcp.server.fastmcp import FastMCP
-
+from core.wizelit_agent_wrapper import WizelitAgentWrapper
 # Bedrock
 from langchain_aws import ChatBedrock
 from langchain_core.messages import SystemMessage, HumanMessage
 
 # Initialize FastMCP
-mcp = FastMCP("RefactoringCrewAgent", port=1337)
+mcp = WizelitAgentWrapper("RefactoringCrewAgent", port=1337)
 
 # In-Memory Job Store
 JOBS: Dict[str, Dict[str, Any]] = {}
@@ -27,7 +26,7 @@ async def _run_refactoring_crew(job_id: str, code: str, instruction: str):
     """
     try:
         job = JOBS[job_id]
-        
+
         # 1. Initialize the LLM (Bedrock)
         llm = ChatBedrock(
             model_id=os.getenv("CHAT_MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0"),
@@ -72,18 +71,24 @@ async def _run_refactoring_crew(job_id: str, code: str, instruction: str):
              HumanMessage(content=refactor_prompt)],
         )
         final_code = _content(refactor_msg).strip()
-        
+
         job["result"] = final_code
         job["status"] = "completed"
         job["logs"].append("✅ Refactor completed successfully.")
-        
+
     except Exception as e:
         job["status"] = "failed"
         job["error"] = str(e)
         job["logs"].append(f"❌ [System] Error: {str(e)}")
 
-@mcp.tool()
+@mcp.ingest(
+    is_long_running=True,
+)
 async def start_refactoring_job(code_snippet: str, instruction: str) -> str:
+    """
+    Submits a Python code snippet to the Engineering Crew for refactoring.
+    Returns a Job ID immediately (does not wait for completion).
+    """
     job_id = f"JOB-{str(uuid.uuid4())[:8]}"
     JOBS[job_id] = {
         "status": "running",
@@ -93,8 +98,11 @@ async def start_refactoring_job(code_snippet: str, instruction: str) -> str:
     asyncio.create_task(_run_refactoring_crew(job_id, code_snippet, instruction))
     return f"JOB_ID:{job_id}"
 
-@mcp.tool()
+@mcp.ingest()
 async def get_job_status(job_id: str) -> str:
+    """
+    Checks the status of a refactoring job. Returns logs or the final result.
+    """
     clean_id = job_id.replace("JOB_ID:", "").strip()
     job = JOBS.get(clean_id)
     if not job: return "Error: Job ID not found."

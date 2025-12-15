@@ -5,3 +5,6 @@ setup:
 
 run:
 	uv run chainlit run main.py -w --port 9191
+
+run-refactoring-agent:
+	uv run python -m mcp_servers.refactoring-agent.main
