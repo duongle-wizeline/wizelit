@@ -15,7 +15,6 @@ from services.mcp_tooling import MCPToolRegistry, MCPToolingError
 
 logger = logging.getLogger(__name__)
 
-
 class AgentRuntime:
     """Lazily compiles the LangGraph agent and refreshes tools when needed."""
 
@@ -45,6 +44,7 @@ class AgentRuntime:
 
             tools = await self._load_tools()
             self._graph = build_graph(llm, tools)
+
             return self._graph
 
     async def refresh(self) -> CompiledStateGraph:
@@ -54,6 +54,11 @@ class AgentRuntime:
             tools = await self._tool_registry.refresh()
             self._graph = build_graph(llm, tools)
             return self._graph
+
+    async def graph_to_mermaid(self) -> str:
+        """Convert the graph to a Mermaid string."""
+        computed_graph = await self.get_graph()
+        return computed_graph.get_graph().draw_mermaid()
 
     async def _load_tools(self) -> List:
         try:
