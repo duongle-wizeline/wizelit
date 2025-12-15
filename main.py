@@ -7,6 +7,7 @@ from typing import Dict, Optional
 import chainlit as cl
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 from chainlit.data.storage_clients.base import BaseStorageClient
+from chainlit.types import ThreadDict
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from agent import agent_runtime
@@ -45,10 +46,10 @@ async def main(message: cl.Message):
         # 2. Check for Job ID (The Async Handshake)
         # UPDATED REGEX: Handles spaces (\s*) and captures the ID accurately
         job_match = re.search(r"JOB_ID:\s*(JOB-[\w-]+)", response_text)
-        
+
         if job_match:
             job_id = job_match.group(1)
-            
+
             # Announce the tracking
             await cl.Message(content=f"👨‍✈️ **Captain:** Dispatching Refactoring Crew... (ID: `{job_id}`)").send()
 
@@ -60,7 +61,7 @@ async def main(message: cl.Message):
                 # Polling Loop (Max 60 seconds)
                 for _ in range(30):
                     await asyncio.sleep(2)
-                    
+
                     # Ask the graph to check status
                     # We send a hidden prompt to the LLM to call 'get_job_status'
                     status_msg = HumanMessage(content=f"Use the 'get_job_status' tool to check status for {job_id}. Just output the result.")
@@ -81,14 +82,14 @@ async def main(message: cl.Message):
                             final_code = status_raw.split("RESULT:")[1].strip()
                         except IndexError:
                             final_code = status_raw # Fallback
-                            
+
                         await cl.Message(content=f"✅ **Refactoring Complete!**\n\n{final_code}").send()
                         return
-                    
+
                     if "STATUS: FAILED" in status_raw:
                         await cl.Message(content="❌ **Job Failed.** Please check logs.").send()
                         return
-            
+
         else:
             # Normal conversation (No job started)
             await cl.Message(content=response_text).send()
@@ -96,6 +97,13 @@ async def main(message: cl.Message):
     except Exception as e:
         logger.exception("Error in main loop")
         await cl.Message(content=f"An error occurred: {str(e)}").send()
+
+
+@cl.on_chat_resume
+async def on_chat_resume(thread: ThreadDict):
+    # Listen on_chat_resume event is required to let user continue the thread
+    # even we do nothing in this event.
+    print(f"Chat resumed: {thread}")
 
 @cl.oauth_callback
 def oauth_callback(provider_id: str, token: str, raw_user_data: Dict[str, str], default_user: cl.User) -> Optional[cl.User]:
