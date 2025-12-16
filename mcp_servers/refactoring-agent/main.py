@@ -4,6 +4,9 @@ import time
 import contextlib
 from utils.bedrock_config import normalize_aws_env, resolve_bedrock_model_id
 
+# Code Scout
+from code_scout import CodeScout
+
 # FastMCP
 from core.wizelit_agent_wrapper import WizelitAgentWrapper, Job
 
