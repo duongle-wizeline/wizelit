@@ -19,10 +19,12 @@ mcp = WizelitAgentWrapper("RefactoringCrewAgent", port=1337)
 # In-Memory Job Store
 JOBS: Dict[str, Dict[str, Any]] = {}
 
+
 UNSUPPORTED_ON_DEMAND_MODEL_IDS = {
     # Bedrock currently requires an inference profile for this model.
     "anthropic.claude-3-5-sonnet-20241022-v2:0",
 }
+
 
 def _normalize_aws_env() -> str:
     """
@@ -262,10 +264,14 @@ async def get_job_status(job_id: str) -> str:
     elif job["status"] == "completed":
         tail_n = int(os.getenv("JOB_LOG_TAIL", "25"))
         logs = job.get("logs", [])
-        tail = "\n".join(logs[-tail_n:]) if logs else ""
-        return f"STATUS: COMPLETED\nRESULT:\n{job['result']}"
+        tail = "\n".join(logs[-tail_n:]) if logs else "[no logs]"
+        # Include logs even on completion so callers don't miss the final wrap-up lines.
+        return f"STATUS: COMPLETED\nLOGS:\n{tail}\nRESULT:\n{job['result']}"
     else:
-        return f"STATUS: FAILED\nERROR: {job.get('error')}"
+        tail_n = int(os.getenv("JOB_LOG_TAIL", "25"))
+        logs = job.get("logs", [])
+        tail = "\n".join(logs[-tail_n:]) if logs else "[no logs]"
+        return f"STATUS: FAILED\nLOGS:\n{tail}\nERROR: {job.get('error')}"
 
 if __name__ == "__main__":
     mcp.run(transport="sse")
