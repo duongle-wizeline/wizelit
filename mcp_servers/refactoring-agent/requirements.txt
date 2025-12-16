@@ -1,5 +1,4 @@
 mcp
 uvicorn
-langchain-aws
 boto3
-crewai
+crewai==1.7.0

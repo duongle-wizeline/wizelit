@@ -1,13 +1,17 @@
 import asyncio
 import uuid
 import os
+import time
+import contextlib
 from typing import Dict, Any
 
 # FastMCP
 from core.wizelit_agent_wrapper import WizelitAgentWrapper
-# Bedrock
-from langchain_aws import ChatBedrock
-from langchain_core.messages import SystemMessage, HumanMessage
+
+# CrewAI
+from crewai import Agent, Task, Crew
+from crewai.llm import LLM
+from crewai.process import Process
 
 # Initialize FastMCP
 mcp = WizelitAgentWrapper("RefactoringCrewAgent", port=1337)
@@ -15,71 +19,213 @@ mcp = WizelitAgentWrapper("RefactoringCrewAgent", port=1337)
 # In-Memory Job Store
 JOBS: Dict[str, Dict[str, Any]] = {}
 
+UNSUPPORTED_ON_DEMAND_MODEL_IDS = {
+    # Bedrock currently requires an inference profile for this model.
+    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+}
+
+def _normalize_aws_env() -> str:
+    """
+    Normalize environment variables so different libraries pick them up consistently.
+    Returns the resolved AWS region name.
+    """
+    region = (
+        os.getenv("AWS_DEFAULT_REGION")
+        or os.getenv("AWS_REGION")
+        or os.getenv("REGION_NAME")
+        or "ap-southeast-2"
+    )
+    os.environ.setdefault("AWS_DEFAULT_REGION", region)
+    os.environ.setdefault("AWS_REGION", region)
+    os.environ.setdefault("AWS_REGION_NAME", region)
+
+    if not os.getenv("AWS_SECRET_ACCESS_KEY") and os.getenv("AWS_SECRET_KEY"):
+        os.environ["AWS_SECRET_ACCESS_KEY"] = os.environ["AWS_SECRET_KEY"]
+
+    return region
+
+
+def _resolve_bedrock_model_id() -> str:
+    """
+    Resolve the Bedrock model identifier to use.
+
+    - If an inference profile ARN/ID is provided, use it.
+    - Otherwise use CHAT_MODEL_ID unless it is known to be unsupported for on-demand,
+      in which case fall back to a safe on-demand model.
+    """
+    inference_profile = (
+        os.getenv("BEDROCK_INFERENCE_PROFILE_ARN")
+        or os.getenv("BEDROCK_INFERENCE_PROFILE_ID")
+        or os.getenv("INFERENCE_PROFILE_ARN")
+        or os.getenv("INFERENCE_PROFILE_ID")
+    )
+    if inference_profile:
+        return inference_profile
+
+    configured = os.getenv("CHAT_MODEL_ID") or ""
+    if configured in UNSUPPORTED_ON_DEMAND_MODEL_IDS:
+        return os.getenv("FALLBACK_CHAT_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
+
+    return configured or os.getenv("FALLBACK_CHAT_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
+
+
+def _append_log(job: Dict[str, Any], message: str) -> None:
+    """Append a timestamped log line to a job record."""
+    ts = time.strftime("%H:%M:%S")
+    job.setdefault("logs", []).append(f"[{ts}] {message}")
+
+
+async def _heartbeat(job_id: str, interval_seconds: float = 5.0) -> None:
+    """
+    Periodically append a heartbeat log while a job is running so the UI
+    has visible progress even during long LLM calls.
+    """
+    start = time.monotonic()
+    while True:
+        await asyncio.sleep(interval_seconds)
+        job = JOBS.get(job_id)
+        if not job or job.get("status") != "running":
+            return
+        elapsed = int(time.monotonic() - start)
+        _append_log(job, f"⏳ Still working... ({elapsed}s)")
+
+
 async def _run_refactoring_crew(job_id: str, code: str, instruction: str):
     """
-    Refactor code using AWS Bedrock (Claude) in two steps:
+    Refactor code using CrewAI in two steps:
     1) Architect-style analysis + plan
     2) Code-only refactor output
 
-    NOTE: This intentionally avoids CrewAI's default LLM loader, which may
-    fall back to OpenAI and require OPENAI_API_KEY.
+    NOTE: We explicitly configure a Bedrock-backed model for CrewAI so it
+    doesn't fall back to OpenAI (and doesn't require OPENAI_API_KEY).
     """
     try:
         job = JOBS[job_id]
 
-        # 1. Initialize the LLM (Bedrock)
-        llm = ChatBedrock(
-            model_id=os.getenv("CHAT_MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0"),
-            model_kwargs={"temperature": 0},
-            region_name=os.getenv("AWS_DEFAULT_REGION", "ap-southeast-2"),
+        # 1) Configure CrewAI LLM (Bedrock via LiteLLM model string).
+        #
+        # Default is derived from CHAT_MODEL_ID to keep configuration familiar.
+        # Example default model string:
+        #   bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0
+        _append_log(job, "🧠 Starting CrewAI refactoring crew...")
+        _append_log(job, "🔧 Resolving Bedrock configuration...")
+        region = _normalize_aws_env()
+        model_id = _resolve_bedrock_model_id()
+        default_crewai_model = f"bedrock/{model_id}"
+        crewai_model = os.getenv("CREWAI_MODEL", default_crewai_model)
+        _append_log(job, f"🌎 Bedrock region: {region}")
+        _append_log(job, f"🤖 CrewAI model: {crewai_model}")
+
+        # Help Bedrock provider resolution (different libs read different env vars).
+        # (Already normalized above; keep for backward compatibility.)
+        os.environ.setdefault("AWS_REGION", region)
+        os.environ.setdefault("AWS_REGION_NAME", region)
+
+        llm = LLM(
+            model=crewai_model,
+            temperature=0,
+            timeout=float(os.getenv("CREWAI_TIMEOUT_SECONDS", "120")),
         )
 
-        def _content(msg) -> str:
-            content = getattr(msg, "content", "")
-            return content if isinstance(content, str) else str(content)
+        _append_log(job, "🧩 Creating agents...")
 
-        job["logs"].append("🧠 Starting analysis the code...")
-
-        analysis_prompt = (
-            "Analyze the following Python code according to the user's instruction.\n"
-            "Identify the top 3 critical issues (e.g., global state, lack of typing, tight coupling, poor naming).\n"
-            "Then propose a short refactoring plan.\n\n"
-            f"INSTRUCTION:\n{instruction}\n\n"
-            f"CODE:\n{code}\n"
+        architect = Agent(
+            role="Senior Software Architect",
+            goal="Analyze the code and propose a concise refactoring plan aligned with SOLID and clean architecture.",
+            backstory="You are pragmatic and prioritize correctness, testability, and clear boundaries.",
+            llm=llm,
+            verbose=False,
+            allow_delegation=False,
         )
 
-        analysis_msg = await asyncio.to_thread(
-            llm.invoke,
-            [SystemMessage(content="You are a Senior Software Architect who prioritizes SOLID and clean architecture."),
-             HumanMessage(content=analysis_prompt)],
-        )
-        analysis_text = _content(analysis_msg).strip()
-        job["logs"].append("🧩 Analysis completed. Refactoring the code...")
-
-        refactor_prompt = (
-            "Refactor the code based on the architect analysis and the instruction.\n"
-            "Use Python type hints and (only when appropriate) Pydantic models.\n"
-            "Output ONLY the Python code. Do NOT wrap with markdown backticks.\n\n"
-            f"INSTRUCTION:\n{instruction}\n\n"
-            f"ARCHITECT ANALYSIS:\n{analysis_text}\n\n"
-            f"CODE:\n{code}\n"
+        developer = Agent(
+            role="Senior Python Developer",
+            goal="Refactor the code according to the instruction and the architect plan, returning only valid Python code.",
+            backstory="You write clean, typed Python and keep behavior changes minimal unless required by the instruction.",
+            llm=llm,
+            verbose=False,
+            allow_delegation=False,
         )
 
-        refactor_msg = await asyncio.to_thread(
-            llm.invoke,
-            [SystemMessage(content="You are a Senior Python Developer. Return only valid Python code."),
-             HumanMessage(content=refactor_prompt)],
+        _append_log(job, "🧪 Preparing tasks...")
+        analysis_task = Task(
+            description=(
+                "Analyze the following Python code according to the user's instruction.\n"
+                "Identify the top 3 critical issues (e.g., global state, lack of typing, tight coupling, poor naming).\n"
+                "Then propose a short refactoring plan.\n\n"
+                f"INSTRUCTION:\n{instruction}\n\n"
+                f"CODE:\n{code}\n"
+            ),
+            expected_output="A bullet list of the top 3 issues and a short refactoring plan.",
+            agent=architect,
         )
-        final_code = _content(refactor_msg).strip()
+
+        refactor_task = Task(
+            description=(
+                "Refactor the code based on the architect analysis and the instruction.\n"
+                "Use Python type hints and (only when appropriate) Pydantic models.\n"
+                "Output ONLY the Python code. Do NOT wrap with markdown backticks.\n\n"
+                f"INSTRUCTION:\n{instruction}\n\n"
+                f"CODE:\n{code}\n"
+            ),
+            expected_output="Refactored Python code only (no markdown, no explanations).",
+            agent=developer,
+            context=[analysis_task],
+        )
+
+        _append_log(job, "🧵 Building crew (sequential)...")
+        crew = Crew(
+            agents=[architect, developer],
+            tasks=[analysis_task, refactor_task],
+            process=Process.sequential,
+            verbose=False,
+        )
+
+        # CrewAI kickoff is synchronous; run it off the event loop thread.
+        _append_log(job, "🚀 Kickoff started (analysis → refactor)...")
+        heartbeat_task = asyncio.create_task(_heartbeat(job_id))
+        try:
+            # Capture any stdout/stderr from CrewAI internals (even if verbose=False).
+            # This avoids noisy terminal spam while still surfacing errors/notes in logs.
+            def _kickoff_captured():
+                import io
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                    out = crew.kickoff()
+                return out, buf.getvalue()
+
+            crew_output, kickoff_io = await asyncio.to_thread(_kickoff_captured)
+        finally:
+            heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat_task
+
+        # Prefer the final task output, but fall back gracefully.
+        _append_log(job, "📦 Kickoff finished, extracting final code...")
+        if kickoff_io and kickoff_io.strip():
+            # Keep this bounded so we don't blow up the UI.
+            tail = kickoff_io.strip().splitlines()[-50:]
+            _append_log(job, "🪵 Crew output (tail):")
+            for line in tail:
+                _append_log(job, line)
+
+        final_code = None
+        try:
+            tasks_output = getattr(crew_output, "tasks_output", None) or []
+            if tasks_output:
+                final_code = getattr(tasks_output[-1], "raw", None)
+        except Exception:
+            final_code = None
+        final_code = (final_code or getattr(crew_output, "raw", "") or "").strip()
 
         job["result"] = final_code
         job["status"] = "completed"
-        job["logs"].append("✅ Refactor completed successfully.")
+        _append_log(job, "✅ Refactor completed successfully.")
 
     except Exception as e:
         job["status"] = "failed"
         job["error"] = str(e)
-        job["logs"].append(f"❌ [System] Error: {str(e)}")
+        _append_log(job, f"❌ [System] Error: {str(e)}")
 
 @mcp.ingest(
     is_long_running=True,
@@ -92,9 +238,10 @@ async def start_refactoring_job(code_snippet: str, instruction: str) -> str:
     job_id = f"JOB-{str(uuid.uuid4())[:8]}"
     JOBS[job_id] = {
         "status": "running",
-        "logs": ["Job submitted to Bedrock..."],
+        "logs": [],
         "result": None
     }
+    _append_log(JOBS[job_id], "📨 Job submitted.")
     asyncio.create_task(_run_refactoring_crew(job_id, code_snippet, instruction))
     return f"JOB_ID:{job_id}"
 
@@ -108,8 +255,14 @@ async def get_job_status(job_id: str) -> str:
     if not job: return "Error: Job ID not found."
 
     if job["status"] == "running":
-        return f"STATUS: RUNNING\nLOGS:\n{job['logs'][-1]}"
+        tail_n = int(os.getenv("JOB_LOG_TAIL", "25"))
+        logs = job.get("logs", [])
+        tail = "\n".join(logs[-tail_n:]) if logs else "[no logs yet]"
+        return f"STATUS: RUNNING\nLOGS:\n{tail}"
     elif job["status"] == "completed":
+        tail_n = int(os.getenv("JOB_LOG_TAIL", "25"))
+        logs = job.get("logs", [])
+        tail = "\n".join(logs[-tail_n:]) if logs else ""
         return f"STATUS: COMPLETED\nRESULT:\n{job['result']}"
     else:
         return f"STATUS: FAILED\nERROR: {job.get('error')}"
