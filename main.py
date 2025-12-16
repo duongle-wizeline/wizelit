@@ -14,6 +14,7 @@ from diff_utils import generate_inline_diff, generate_plotly_diff
 from agent import agent_runtime
 from database import DatabaseManager
 from utils import create_chat_settings
+from utils.diff_viewer import html_diff_viewer
 
 db_manager = DatabaseManager()
 logger = logging.getLogger(__name__)
@@ -84,30 +85,28 @@ async def main(message: cl.Message):
                         except IndexError:
                             final_code = status_raw
 
-                        original_code = message.content
-
-                        # 1. Generate the Plotly Figure
-                        fig = generate_plotly_diff(original_code, final_code)
-
-                        # 2. Create the Plotly Element
-                        # display="inline" puts it right in the chat!
-                        diff_element = cl.Plotly(
-                            name="visual_diff", 
-                            figure=fig, 
-                            display="inline"
+                        # 3. Render diff viewer
+                        from_lines = _extract_lines(message.content)
+                        to_lines = _extract_lines(final_code)
+                        html_diff = html_diff_viewer(
+                            from_lines=from_lines,
+                            to_lines=to_lines,
                         )
+                        diff_viewer_element = cl.CustomElement(name="RawHtmlRenderElement", props={"htmlString": html_diff})
 
-                        # 3. Send Message
+                        # Store the element if we want to update it server side at a later stage.
+                        cl.user_session.set("diff_viewer_el", diff_viewer_element)
+
                         await cl.Message(
                             content="✅ **Refactoring Complete!**\n\nHere is the side-by-side comparison:",
-                            elements=[diff_element]
+                            elements=[diff_viewer_element]
                         ).send()
 
                         # 4. Final Code Block (Copy/Paste friendly)
                         await cl.Message(
                             content=f"### 📦 Final Code\n```python\n{final_code}\n```"
                         ).send()
-                        
+
                         return
 
                     if "STATUS: FAILED" in status_raw:
@@ -142,3 +141,13 @@ def _extract_response(messages: list[BaseMessage]) -> str:
         if isinstance(message, AIMessage) and message.content:
             return str(message.content)
     return ""
+
+def _extract_lines(text: str) -> list[str]:
+    # Break incoming message into an array of text lines (non-empty)
+    lines = [l for l in text.splitlines() if l.strip() != ""]
+    # Fallback to original content if splitting yields nothing (e.g., only whitespace)
+    if not lines:
+        lines = [text]
+    return lines
+
+
