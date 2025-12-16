@@ -4,6 +4,7 @@ import os
 import time
 import contextlib
 from typing import Dict, Any
+from utils.bedrock_config import normalize_aws_env, resolve_bedrock_model_id
 
 # FastMCP
 from core.wizelit_agent_wrapper import WizelitAgentWrapper
@@ -18,57 +19,6 @@ mcp = WizelitAgentWrapper("RefactoringCrewAgent", port=1337)
 
 # In-Memory Job Store
 JOBS: Dict[str, Dict[str, Any]] = {}
-
-
-UNSUPPORTED_ON_DEMAND_MODEL_IDS = {
-    # Bedrock currently requires an inference profile for this model.
-    "anthropic.claude-3-5-sonnet-20241022-v2:0",
-}
-
-
-def _normalize_aws_env() -> str:
-    """
-    Normalize environment variables so different libraries pick them up consistently.
-    Returns the resolved AWS region name.
-    """
-    region = (
-        os.getenv("AWS_DEFAULT_REGION")
-        or os.getenv("AWS_REGION")
-        or os.getenv("REGION_NAME")
-        or "ap-southeast-2"
-    )
-    os.environ.setdefault("AWS_DEFAULT_REGION", region)
-    os.environ.setdefault("AWS_REGION", region)
-    os.environ.setdefault("AWS_REGION_NAME", region)
-
-    if not os.getenv("AWS_SECRET_ACCESS_KEY") and os.getenv("AWS_SECRET_KEY"):
-        os.environ["AWS_SECRET_ACCESS_KEY"] = os.environ["AWS_SECRET_KEY"]
-
-    return region
-
-
-def _resolve_bedrock_model_id() -> str:
-    """
-    Resolve the Bedrock model identifier to use.
-
-    - If an inference profile ARN/ID is provided, use it.
-    - Otherwise use CHAT_MODEL_ID unless it is known to be unsupported for on-demand,
-      in which case fall back to a safe on-demand model.
-    """
-    inference_profile = (
-        os.getenv("BEDROCK_INFERENCE_PROFILE_ARN")
-        or os.getenv("BEDROCK_INFERENCE_PROFILE_ID")
-        or os.getenv("INFERENCE_PROFILE_ARN")
-        or os.getenv("INFERENCE_PROFILE_ID")
-    )
-    if inference_profile:
-        return inference_profile
-
-    configured = os.getenv("CHAT_MODEL_ID") or ""
-    if configured in UNSUPPORTED_ON_DEMAND_MODEL_IDS:
-        return os.getenv("FALLBACK_CHAT_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
-
-    return configured or os.getenv("FALLBACK_CHAT_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
 
 
 def _append_log(job: Dict[str, Any], message: str) -> None:
@@ -111,8 +61,8 @@ async def _run_refactoring_crew(job_id: str, code: str, instruction: str):
         #   bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0
         _append_log(job, "🧠 Starting CrewAI refactoring crew...")
         _append_log(job, "🔧 Resolving Bedrock configuration...")
-        region = _normalize_aws_env()
-        model_id = _resolve_bedrock_model_id()
+        region = normalize_aws_env(default_region="ap-southeast-2")
+        model_id = resolve_bedrock_model_id()
         default_crewai_model = f"bedrock/{model_id}"
         crewai_model = os.getenv("CREWAI_MODEL", default_crewai_model)
         _append_log(job, f"🌎 Bedrock region: {region}")
