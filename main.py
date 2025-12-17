@@ -9,6 +9,7 @@ from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 from chainlit.data.storage_clients.base import BaseStorageClient
 from chainlit.types import ThreadDict
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from diff_utils import generate_inline_diff, generate_plotly_diff
 
 from agent import agent_runtime
 from database import DatabaseManager
@@ -78,8 +79,35 @@ async def main(message: cl.Message):
                             last_logs = clean_logs
 
                     if "STATUS: COMPLETED" in status_raw:
-                        final_code = status_raw.split("RESULT:")[1].strip() if "RESULT:" in status_raw else status_raw
-                        await cl.Message(content=f"✅ **Done!**\n\n{final_code}").send()
+                        try:
+                            final_code = status_raw.split("RESULT:")[1].strip()
+                        except IndexError:
+                            final_code = status_raw
+
+                        original_code = message.content
+
+                        # 1. Generate the Plotly Figure
+                        fig = generate_plotly_diff(original_code, final_code)
+
+                        # 2. Create the Plotly Element
+                        # display="inline" puts it right in the chat!
+                        diff_element = cl.Plotly(
+                            name="visual_diff", 
+                            figure=fig, 
+                            display="inline"
+                        )
+
+                        # 3. Send Message
+                        await cl.Message(
+                            content="✅ **Refactoring Complete!**\n\nHere is the side-by-side comparison:",
+                            elements=[diff_element]
+                        ).send()
+
+                        # 4. Final Code Block (Copy/Paste friendly)
+                        await cl.Message(
+                            content=f"### 📦 Final Code\n```python\n{final_code}\n```"
+                        ).send()
+                        
                         return
 
                     if "STATUS: FAILED" in status_raw:
