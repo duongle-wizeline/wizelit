@@ -1,0 +1,1 @@
+"""Code Scout MCP Server"""

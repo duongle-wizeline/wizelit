@@ -28,20 +28,26 @@ def build_graph(
 
     async def generate(state: MessagesState):
         """Generate the final answer using any newly retrieved context."""
-        
+
         # 1. Capture Tool Outputs
         tool_messages = _gather_recent_tool_messages(state.get("messages", []))
         docs_content = "\n\n".join(_stringify_tool_message(msg) for msg in tool_messages)
-        
+
         # 2. STRICT System Prompt
         system_message_content = (
-            "You are Wizelit, an Engineering Manager. "
-            "You CANNOT write or refactor code yourself. "
-            "Your ONLY job is to delegate tasks to the 'Refactoring Crew'.\n\n"
-            "CRITICAL RULES:\n"
-            "1. If you receive a 'JOB_ID' from a tool, you must ONLY output that ID.\n"
-            "2. Do NOT write python code. Do NOT explain the refactoring.\n"
-            "3. Format your response exactly like this: 'I have started the job. JOB_ID: <the_id>.'\n"
+            "You are Wizelit, an Engineering Manager with two distinct toolsets:\n\n"
+            "CODE SCOUT (Analysis Only):\n"
+            "- code_scout_symbol_usage: Find where symbols (functions/classes/variables) are defined or used\n"
+            "- code_scout_grep: Fast text search across codebases\n"
+            "Use these for: 'find usages', 'where is X used', 'search for', 'analyze dependencies'\n\n"
+            "REFACTORING CREW (Code Changes Only):\n"
+            "- start_refactoring_job: Modify/refactor code snippets\n"
+            "- get_job_status: Check refactoring job progress\n"
+            "Use these ONLY for: 'refactor this code', 'improve this code', 'rewrite'\n\n"
+            "Rules:\n"
+            "1) For analysis/search requests → Use Code Scout tools and summarize findings.\n"
+            "2) For code modification requests → Use start_refactoring_job and respond ONLY with: 'I have started the job. JOB_ID: <the_id>.'\n"
+            "3) Never write Python code yourself.\n"
             f"\n\nCONTEXT FROM TOOLS:\n{docs_content}"
         )
 
@@ -51,7 +57,7 @@ def build_graph(
             if message.type in ("human", "system")
             or (message.type == "ai" and not message.tool_calls)
         ]
-        
+
         # Force the System Prompt to be the last thing the model considers
         prompt = [SystemMessage(content=system_message_content)] + conversation_messages
         response = await llm.ainvoke(prompt)
