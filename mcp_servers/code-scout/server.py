@@ -16,7 +16,7 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from core.wizelit_agent_wrapper import WizelitAgentWrapper
+from core.wizelit_agent_wrapper import WizelitAgentWrapper, Job
 
 from code_scout.code_scout import CodeScout
 
@@ -217,6 +217,7 @@ async def code_scout_symbol_usage(
 
 @mcp.ingest(is_long_running=True, description="Run grep via Code Scout (formatted text).")
 async def code_scout_grep(
+    job: Job,
     target: str,
     pattern: str,
     file_pattern: str = "*.py",
