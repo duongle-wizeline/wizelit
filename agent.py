@@ -16,7 +16,7 @@ from utils.bedrock_config import normalize_aws_env, resolve_bedrock_model_id
 class AgentRuntime:
     def __init__(self):
         self._graph = None
-        self._exit_stack = AsyncExitStack() 
+        self._exit_stack = AsyncExitStack()
         self._sessions = {}
         self._tool_sessions = {}
 
@@ -59,9 +59,9 @@ class AgentRuntime:
                 model_kwargs={"temperature": 0},
                 region_name=region,
             )
-            
+
             self._graph = build_graph(llm=llm, tools=tools_all)
-            
+
         except Exception as e:
             print(f"❌ [Agent] Connection Failed: {e}")
             await self._exit_stack.aclose()
@@ -71,12 +71,12 @@ class AgentRuntime:
         if self._graph is None:
             await self.ensure_ready()
         return self._graph
-    
+
     async def graph_to_mermaid(self) -> str:
         """Convert the graph to a Mermaid string."""
         computed_graph = await self.get_graph()
         return computed_graph.get_graph().draw_mermaid()
-    
+
     # Allow calling tools directly (for polling)
     async def call_tool(self, name: str, arguments: dict):
         if not self._tool_sessions:
