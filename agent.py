@@ -50,6 +50,7 @@ class AgentRuntime:
         try:
             await connect_and_load("Refactoring Agent", "http://127.0.0.1:1337/sse")
             await connect_and_load("Code Scout", "http://127.0.0.1:1338/sse")
+            await connect_and_load("Weather Agent", "http://127.0.0.1:1339/sse")
 
             # Bedrock LLM
             region = normalize_aws_env(default_region="us-east-1")
