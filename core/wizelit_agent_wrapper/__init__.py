@@ -4,4 +4,6 @@ from .wizelit_agent_wrapper import (
     LLM_FRAMEWORK_LANGCHAIN,
     LLM_FRAMEWORK_LANGGRAPH,
     LlmFrameworkType,
+    CurrentJob,
 )
+from .job import Job
