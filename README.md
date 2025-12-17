@@ -37,8 +37,27 @@ fastmcp run main.py:mcp --transport http --port 1337
 
 Once the server is running, Chainlit will automatically discover the available MCP tools and expose them to the internal LLM.
 
-# Code Scout Agent
+# MCP Servers
 
-- The Refactoring MCP server (mcp_servers/refactoring-agent/main.py) now exposes Code Scout tools alongside Refactoring Crew.
-- Start it locally with: `python mcp_servers/refactoring-agent/main.py`
-- Provide a local path or GitHub URL to scan; set `GITHUB_TOKEN` for private repositories.
+This repository includes two separate MCP servers:
+
+## 1. Code Scout MCP Server
+
+Fast synchronous symbol scanner for Python codebases.
+
+- Location: `mcp_servers/code-scout/`
+- Start: `python mcp_servers/code-scout/server.py`
+- Tools: scan_directory, find_symbol, analyze_impact, grep_search, git_blame, build_dependency_graph
+- Supports local paths and GitHub URLs
+- Set `GITHUB_TOKEN` for private repositories
+
+## 2. Refactoring Agent MCP Server
+
+AI-powered code refactoring using CrewAI and AWS Bedrock.
+
+- Location: `mcp_servers/refactoring-agent/`
+- Start: `python mcp_servers/refactoring-agent/main.py`
+- Tools: start_refactoring_job, get_job_status
+- Requires AWS credentials with Bedrock access
+
+See [mcp_servers/README.md](mcp_servers/README.md) for detailed documentation.
