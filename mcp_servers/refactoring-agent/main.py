@@ -2,12 +2,6 @@ import asyncio
 import os
 import time
 import contextlib
-import sys
-from pathlib import Path
-
-# Add parent directories to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
 from utils.bedrock_config import normalize_aws_env, resolve_bedrock_model_id
 
 # FastMCP
