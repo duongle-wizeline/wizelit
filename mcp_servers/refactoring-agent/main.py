@@ -177,6 +177,15 @@ async def get_job_status(job_id: str) -> str:
     else:
         return f"STATUS: FAILED\nLOGS:\n{tail}\nERROR: {job.error or 'Unknown error'}"
 
+
+@mcp.ingest()
+async def get_jobs() -> list[Job]:
+    """
+    Checks the status of a refactoring job. Returns logs or the final result.
+    """
+    return [ job.id for job in mcp.get_jobs()]
+
+
 if __name__ == "__main__":
     mcp.run(transport="sse")
     # mcp.run()

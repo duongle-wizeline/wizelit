@@ -209,26 +209,35 @@ class WizelitAgentWrapper:
     ) -> Any:
         """Central execution method for all tools."""
 
+        token = None
         # Create Job instance if not provided
-        if job is None:
+        if job is None and is_long_running:
             job = Job(ctx)
 
-        # Store job in jobs dictionary for later retrieval
-        self._jobs[job.id] = job
+            # Store job in jobs dictionary for later retrieval
+            self._jobs[job.id] = job
 
-        # Set CurrentJob context so CurrentJob() can retrieve it
-        token = _current_job.set(job)
+            # Set CurrentJob context so CurrentJob() can retrieve it
+            token = _current_job.set(job)
 
         try:
             try:
-                result = await self._execute_with_basic_streaming(
-                    func, ctx, is_async, is_long_running, job, **kwargs
-                )
+                # Add job to kwargs if function signature includes it
+                func_sig = inspect.signature(func)
+                if 'job' in func_sig.parameters and job is not None:
+                    kwargs['job'] = job
+
+                # Execute function (async or sync)
+                logging.info(f"kwargs: {kwargs}")
+                if is_async:
+                    result = await func(**kwargs)
+                else:
+                    result = await asyncio.to_thread(func, **kwargs)
 
                 # Ensure result is never None for functions that should return strings
                 func_sig = inspect.signature(func)
-                return_annotation = func_sig.return_annotation
                 if result is None:
+                    return_annotation = func_sig.return_annotation
                     # Check if return type is str (handle both direct str and Optional[str])
                     is_str_return = (
                         return_annotation == str or
@@ -238,15 +247,6 @@ class WizelitAgentWrapper:
                     if is_str_return:
                         logging.warning(f"Function {tool_name} returned None but should return str. Returning empty string.")
                         result = ""
-
-                # Only mark job as completed if it's NOT a long-running job
-                # Long-running jobs that spawn background tasks should manage their own status
-                # For non-long-running jobs, mark as completed when function returns successfully
-                if not is_long_running:
-                    # Only mark as completed if status is still "running" (function might have changed it)
-                    if job.status == "running":
-                        job.status = "completed"
-                # For long-running jobs, leave status management to the function/background task
 
                 return result
 
@@ -261,47 +261,9 @@ class WizelitAgentWrapper:
                 )
                 raise
         finally:
-            # Reset CurrentJob context
-            _current_job.reset(token)
-
-    async def _execute_with_basic_streaming(
-        self,
-        func: Callable,
-        ctx: Context,
-        is_async: bool,
-        is_long_running: bool,
-        job: Optional[Job],
-        **kwargs
-    ) -> Any:
-        """Execute function with basic log streaming."""
-
-        # Add job to kwargs if function signature includes it
-        func_sig = inspect.signature(func)
-        if 'job' in func_sig.parameters and job is not None:
-            kwargs['job'] = job
-
-        # Simple execution without log capture
-        logging.info(f"kwargs: {kwargs}")
-        if is_async:
-            result = await func(**kwargs)
-        else:
-            result = await asyncio.to_thread(func, **kwargs)
-
-        # Ensure result is never None for functions that should return strings
-        if result is None:
-            func_sig = inspect.signature(func)
-            return_annotation = func_sig.return_annotation
-            # Check if return type is str (handle both direct str and Optional[str])
-            is_str_return = (
-                return_annotation == str or
-                (hasattr(return_annotation, '__origin__') and return_annotation.__origin__ is str) or
-                (hasattr(return_annotation, '__args__') and str in getattr(return_annotation, '__args__', []))
-            )
-            if is_str_return:
-                logging.warning(f"Function {func.__name__} returned None but should return str. Returning empty string.")
-                return ""
-
-        return result
+            # Reset CurrentJob context only if we set it
+            if token is not None:
+                _current_job.reset(token)
 
     def run(
         self,
@@ -387,6 +349,15 @@ class WizelitAgentWrapper:
             Job instance if exists, None otherwise
         """
         return self._jobs.get(job_id)
+
+    def get_jobs(self) -> list[Job]:
+        """
+        Get all Job instances.
+
+        Returns:
+            List of Job instances
+        """
+        return list(self._jobs.values())
 
     def set_job_status(self, job_id: str, status: str) -> bool:
         """
