@@ -3,6 +3,7 @@ import difflib
 import os
 import time
 import contextlib
+from typing import Dict, Any
 from utils.bedrock_config import normalize_aws_env, resolve_bedrock_model_id
 
 # FastMCP
@@ -167,8 +168,14 @@ async def _run_refactoring_crew(job: Job, code: str, instruction: str):
         )
 
         return {
-            "text": final_code,
-            "html": html_diff
+            "code": final_code,
+            "html":
+                "<div>" +
+                "<h6 class='font-bold'>✅ Refactoring Complete!</h6>" +
+                "<br/>" +
+                "<p>Here is the side-by-side comparison:</p>" +
+                html_diff +
+                "</div>"
         }
 
     except Exception as e:
@@ -190,13 +197,13 @@ async def start_refactoring_job(code_snippet: str, instruction: str, job: Job) -
     return job.id
 
 @mcp.ingest()
-async def get_job_status(job_id: str) -> str:
+async def get_job_status(job_id: str) -> Dict[str, Any]:
     """
     Checks the status of a refactoring job. Returns logs or the final result.
     """
     job = mcp.get_job(job_id)
     if not job:
-        return "Error: Job ID not found."
+        return {"error": "Job ID not found."}
 
     tail_n = int(os.getenv("JOB_LOG_TAIL", "25"))
     logs = mcp.get_job_logs(job_id) or []

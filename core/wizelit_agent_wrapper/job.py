@@ -145,7 +145,7 @@ class Job:
             try:
                 result = await coro
                 # Store string results for convenience
-                if isinstance(result, str):
+                if isinstance(result, str|dict):
                     self._result = result
                 if self._status == "running":
                     self._status = "completed"
