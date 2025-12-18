@@ -87,12 +87,12 @@ class Job:
         self._status = value
 
     @property
-    def result(self) -> Optional[str]:
+    def result(self) -> Optional[str | dict[str, Any]]:
         """Job result (if completed successfully)."""
         return self._result
 
     @result.setter
-    def result(self, value: Optional[str]) -> None:
+    def result(self, value: Optional[str | dict[str, Any]]) -> None:
         """Set job result."""
         self._result = value
 

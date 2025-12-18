@@ -376,7 +376,7 @@ class WizelitAgentWrapper:
         job.status = status
         return True
 
-    def set_job_result(self, job_id: str, result: Optional[str]) -> bool:
+    def set_job_result(self, job_id: str, result: Optional[str | dict[str, Any]]) -> bool:
         """
         Set the result of a job by job_id.
 

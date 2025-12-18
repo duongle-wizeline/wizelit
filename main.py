@@ -66,6 +66,7 @@ async def main(message: cl.Message):
                             "get_job_status",
                             {"job_id": job_id},
                         )
+                        print(f"Tool result: {tool_result.content}")
                         # Extract text
                         status_raw = tool_result.content[0].text
                     except Exception as e:
