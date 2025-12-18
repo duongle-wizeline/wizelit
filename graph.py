@@ -108,7 +108,7 @@ def _stringify_tool_message(message) -> str:
 def _normalize_tool_messages(messages: list) -> list:
     """
     Normalize tool messages to fix Bedrock validation issues.
-    
+
     When MCP tools return complex content structures with extra fields like 'id',
     Bedrock rejects them with ValidationException. This function converts tool
     result content to plain strings.
@@ -123,7 +123,7 @@ def _normalize_tool_messages(messages: list) -> list:
                 string_content = str(content)
             else:
                 string_content = content
-            
+
             # Create a new ToolMessage with normalized string content
             normalized_msg = ToolMessage(
                 content=string_content,
