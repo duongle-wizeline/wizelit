@@ -73,19 +73,23 @@ async def main(message: cl.Message):
                         job_result = {"error": f"Error polling: {e}"}
 
                     # Update UI
-                    if job_result["logs"] and job_result["logs"] != last_logs:
+                    if "logs" in job_result and job_result["logs"] and job_result["logs"] != last_logs:
                         step.output = job_result["logs"]
                         await step.update()
                         last_logs = job_result["logs"]
 
-                    if job_result["status"]:
+                    if "status" in job_result:
                         if job_result["status"] == "completed":
                             tool_result = job_result["result"]
+
+                            if isinstance(tool_result, str):
+                                await cl.Message(content=f"{tool_result}").send()
+                                return
 
                             if "html" in tool_result and tool_result["html"]:
                                 html_viewer_element = cl.CustomElement(name="RawHtmlRenderElement", props={"htmlString": tool_result["html"]})
                                 # Store the element if we want to update it server side at a later stage.
-                                cl.user_session.set("diff_viewer_el", html_viewer_element)
+                                cl.user_session.set("html_viewer_el", html_viewer_element)
                                 await cl.Message(content="", elements=[html_viewer_element]).send()
 
                             if "code" in tool_result and tool_result["code"]:
@@ -130,13 +134,4 @@ def _extract_response(messages: list[BaseMessage]) -> str:
         if isinstance(message, AIMessage) and message.content:
             return str(message.content)
     return ""
-
-def _extract_lines(text: str) -> list[str]:
-    # Break incoming message into an array of text lines (non-empty)
-    lines = [l for l in text.splitlines() if l.strip() != ""]
-    # Fallback to original content if splitting yields nothing (e.g., only whitespace)
-    if not lines:
-        lines = [text]
-    return lines
-
 

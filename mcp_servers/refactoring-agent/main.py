@@ -210,21 +210,18 @@ async def get_job_status(job_id: str) -> Dict[str, Any]:
     tail = "\n".join(logs[-tail_n:]) if logs else "[no logs yet]"
 
     if job.status == "running":
-        # return f"STATUS: RUNNING\nLOGS:\n{tail}"
         return {
             "status": "running",
             "logs": tail
         }
     elif job.status == "completed":
         # Include logs even on completion so callers don't miss the final wrap-up lines.
-        # return f"STATUS: COMPLETED\nLOGS:\n{tail}\nRESULT:\n{job.result or ''}"
         return {
             "status": "completed",
             "logs": tail,
             "result": job.result or ""
         }
     else:
-        # return f"STATUS: FAILED\nLOGS:\n{tail}\nERROR: {job.error or 'Unknown error'}"
         return {
             "status": "failed",
             "logs": tail,
