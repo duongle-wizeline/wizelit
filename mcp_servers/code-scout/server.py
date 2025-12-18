@@ -25,15 +25,76 @@ mcp = WizelitAgentWrapper("CodeScoutAgent", transport="sse", port=1338)
 
 
 def _init_scout(root_directory: str, github_token: Optional[str]) -> CodeScout:
-    """Create a CodeScout instance with caching enabled."""
-    return CodeScout(root_directory, github_token=github_token, use_cache=True)
+    """Create a CodeScout instance with caching disabled to ensure fresh results."""
+    return CodeScout(root_directory, github_token=github_token, use_cache=False)
 
 
-def _relative_to_root(root: Path, file_path: str) -> str:
-    """Convert absolute paths to paths relative to the scan root when possible."""
+def _convert_usage_paths(usages: list, scout: CodeScout) -> list:
+    """Convert cached file paths in usage objects back to GitHub URLs when applicable."""
+    from code_scout.github_helper import GitHubHelper
+    parsed = None
+
+    if scout.original_input and "github.com" in scout.original_input.lower():
+        parsed = GitHubHelper.parse_github_url(scout.original_input)
+
+    root_path = Path(scout.root_directory).resolve()
+    converted = []
+
+    for usage in usages:
+        usage_dict = asdict(usage) if hasattr(usage, '__dataclass_fields__') else usage
+        if isinstance(usage_dict, dict) and "file_path" in usage_dict:
+            try:
+                file_path_obj = Path(usage_dict["file_path"]).resolve()
+                if file_path_obj.is_relative_to(root_path):
+                    rel_path = str(file_path_obj.relative_to(root_path))
+                else:
+                    rel_path = str(file_path_obj)
+
+                # If GitHub repo, convert to GitHub URL
+                if parsed:
+                    owner = parsed.get("owner")
+                    repo = parsed.get("repo")
+                    ref = parsed.get("ref", "main")
+                    usage_dict["file_path"] = f"https://github.com/{owner}/{repo}/blob/{ref}/{rel_path}"
+                else:
+                    # For local paths, keep the relative path
+                    usage_dict["file_path"] = rel_path
+            except Exception:
+                pass
+        converted.append(usage_dict)
+
+    return converted
+
+
+def _relative_to_root(root: Path, file_path: str, original_input: Optional[str] = None) -> str:
+    """Convert absolute paths to paths relative to the scan root when possible.
+
+    If original_input is a GitHub URL, convert file paths to GitHub file URLs.
+    """
     try:
         file_path_obj = Path(file_path).resolve()
         root_resolved = root.resolve()
+
+        # If this is a GitHub repository, convert to GitHub URL format
+        if original_input and "github.com" in original_input.lower():
+            from code_scout.github_helper import GitHubHelper
+            parsed = GitHubHelper.parse_github_url(original_input)
+            if parsed:
+                # Get relative path from root
+                if file_path_obj.is_relative_to(root_resolved):
+                    rel_path = str(file_path_obj.relative_to(root_resolved))
+                else:
+                    rel_path = str(file_path_obj)
+
+                # Build GitHub URL
+                owner = parsed.get("owner")
+                repo = parsed.get("repo")
+                ref = parsed.get("ref", "main")  # Default to main branch
+
+                # Construct the GitHub blob URL
+                return f"https://github.com/{owner}/{repo}/blob/{ref}/{rel_path}"
+
+        # For local paths, return relative path if possible
         if file_path_obj.is_relative_to(root_resolved):
             return str(file_path_obj.relative_to(root_resolved))
         return str(file_path_obj)
@@ -51,7 +112,11 @@ async def scan_directory(
         scout = _init_scout(root_directory, github_token)
         try:
             result = scout.scan_directory(pattern)
-            return {symbol: [asdict(usage) for usage in usages] for symbol, usages in result.items()}
+            converted = {}
+            for symbol, usages in result.items():
+                converted_usages = _convert_usage_paths(usages, scout)
+                converted[symbol] = converted_usages
+            return converted
         finally:
             scout.cleanup()
 
@@ -71,7 +136,8 @@ async def find_symbol(
             if not scout.symbol_usages:
                 scout.scan_directory(pattern)
             result = scout.find_symbol(symbol_name)
-            return [asdict(usage) for usage in result]
+            converted = _convert_usage_paths(result, scout)
+            return converted
         finally:
             scout.cleanup()
 
@@ -107,7 +173,31 @@ async def grep_search(
     def _run():
         scout = _init_scout(root_directory, github_token)
         try:
-            return scout.grep_search(pattern=pattern, file_pattern=file_pattern)
+            matches = scout.grep_search(pattern=pattern, file_pattern=file_pattern)
+
+            # Convert file paths in matches if it's a GitHub repo
+            if scout.original_input and "github.com" in scout.original_input.lower():
+                from code_scout.github_helper import GitHubHelper
+                parsed = GitHubHelper.parse_github_url(scout.original_input)
+                if parsed:
+                    owner = parsed.get("owner")
+                    repo = parsed.get("repo")
+                    ref = parsed.get("ref", "main")
+                    root_path = Path(scout.root_directory).resolve()
+
+                    for match in matches:
+                        if "file" in match:
+                            try:
+                                file_path_obj = Path(match["file"]).resolve()
+                                if file_path_obj.is_relative_to(root_path):
+                                    rel_path = str(file_path_obj.relative_to(root_path))
+                                else:
+                                    rel_path = str(file_path_obj)
+                                match["file"] = f"https://github.com/{owner}/{repo}/blob/{ref}/{rel_path}"
+                            except Exception:
+                                pass
+
+            return matches
         finally:
             scout.cleanup()
 
@@ -143,7 +233,31 @@ async def build_dependency_graph(
             if not scout.symbol_usages:
                 scout.scan_directory(pattern)
             graph = scout.build_dependency_graph()
-            return {symbol: asdict(node) for symbol, node in graph.items()}
+
+            # Convert file paths in nodes if it's a GitHub repo
+            result = {}
+            for symbol, node in graph.items():
+                node_dict = asdict(node)
+                if scout.original_input and "github.com" in scout.original_input.lower():
+                    from code_scout.github_helper import GitHubHelper
+                    parsed = GitHubHelper.parse_github_url(scout.original_input)
+                    if parsed and "file_path" in node_dict:
+                        owner = parsed.get("owner")
+                        repo = parsed.get("repo")
+                        ref = parsed.get("ref", "main")
+                        root_path = Path(scout.root_directory).resolve()
+                        try:
+                            file_path_obj = Path(node_dict["file_path"]).resolve()
+                            if file_path_obj.is_relative_to(root_path):
+                                rel_path = str(file_path_obj.relative_to(root_path))
+                            else:
+                                rel_path = str(file_path_obj)
+                            node_dict["file_path"] = f"https://github.com/{owner}/{repo}/blob/{ref}/{rel_path}"
+                        except Exception:
+                            pass
+                result[symbol] = node_dict
+
+            return result
         finally:
             scout.cleanup()
 
@@ -200,7 +314,7 @@ async def code_scout_symbol_usage(
 
             lines.append("Top matches:")
             for usage in usages[:max_results]:
-                rel_path = _relative_to_root(root_path, usage.file_path)
+                rel_path = _relative_to_root(root_path, usage.file_path, scout.original_input)
                 lines.append(
                     f"- {rel_path}:{usage.line_number} [{usage.usage_type}] {usage.context}"
                 )
@@ -235,7 +349,7 @@ async def code_scout_grep(
             lines = [f"Grep results for '{pattern}'", f"Target: {target}", "Matches:"]
 
             for match in matches[:max_results]:
-                rel_path = _relative_to_root(root_path, match.get("file", match.get("path", "?")))
+                rel_path = _relative_to_root(root_path, match.get("file", match.get("path", "?")), scout.original_input)
                 lines.append(
                     f"- {rel_path}:{match.get('line_number')} {match.get('content')}"
                 )
