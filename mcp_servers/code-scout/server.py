@@ -25,8 +25,8 @@ mcp = WizelitAgentWrapper("CodeScoutAgent", transport="sse", port=1338)
 
 
 def _init_scout(root_directory: str, github_token: Optional[str]) -> CodeScout:
-    """Create a CodeScout instance with caching enabled."""
-    return CodeScout(root_directory, github_token=github_token, use_cache=True)
+    """Create a CodeScout instance with caching disabled to ensure fresh results."""
+    return CodeScout(root_directory, github_token=github_token, use_cache=False)
 
 
 def _convert_usage_paths(usages: list, scout: CodeScout) -> list:
