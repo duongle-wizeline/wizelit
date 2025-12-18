@@ -1,3 +1,4 @@
+import json
 import logging
 import uuid
 import asyncio
@@ -62,56 +63,48 @@ async def main(message: cl.Message):
 
                     # Call tool via agent_runtime (Reuse existing connection)
                     try:
-                        tool_result = await agent_runtime.call_tool(
+                        job_status = await agent_runtime.call_tool(
                             "get_job_status",
                             {"job_id": job_id},
                         )
                         # Extract text
-                        status_raw = tool_result.content[0].text
+                        job_result = json.loads(job_status.content[0].text)
                     except Exception as e:
-                        status_raw = f"Error polling: {e}"
+                        job_result = {"error": f"Error polling: {e}"}
 
                     # Update UI
-                    if "LOGS:" in status_raw:
-                        clean_logs = status_raw.split("LOGS:")[1].split("RESULT:")[0].strip()
-                        if clean_logs and clean_logs != last_logs:
-                            step.output = clean_logs
-                            await step.update()
-                            last_logs = clean_logs
+                    if "logs" in job_result and job_result["logs"] and job_result["logs"] != last_logs:
+                        step.output = job_result["logs"]
+                        await step.update()
+                        last_logs = job_result["logs"]
 
-                    if "STATUS: COMPLETED" in status_raw:
-                        try:
-                            final_code = status_raw.split("RESULT:")[1].strip()
-                        except IndexError:
-                            final_code = status_raw
+                    if "status" in job_result:
+                        if job_result["status"] == "completed":
+                            tool_result = job_result["result"]
 
-                        # 3. Render diff viewer
-                        from_lines = _extract_lines(message.content)
-                        to_lines = _extract_lines(final_code)
-                        html_diff = html_diff_viewer(
-                            from_lines=from_lines,
-                            to_lines=to_lines,
-                        )
-                        diff_viewer_element = cl.CustomElement(name="RawHtmlRenderElement", props={"htmlString": html_diff})
+                            if isinstance(tool_result, str):
+                                await cl.Message(content=f"{tool_result}").send()
+                                return
 
-                        # Store the element if we want to update it server side at a later stage.
-                        cl.user_session.set("diff_viewer_el", diff_viewer_element)
+                            if "html" in tool_result and tool_result["html"]:
+                                html_viewer_element = cl.CustomElement(name="RawHtmlRenderElement", props={"htmlString": tool_result["html"]})
+                                # Store the element if we want to update it server side at a later stage.
+                                cl.user_session.set("html_viewer_el", html_viewer_element)
+                                await cl.Message(content="", elements=[html_viewer_element]).send()
 
-                        await cl.Message(
-                            content="✅ **Refactoring Complete!**\n\nHere is the side-by-side comparison:",
-                            elements=[diff_viewer_element]
-                        ).send()
+                            if "code" in tool_result and tool_result["code"]:
+                                await cl.Message(
+                                    content=f"### 📦 Final Code\n```python\n{tool_result["code"]}\n```"
+                                ).send()
 
-                        # 4. Final Code Block (Copy/Paste friendly)
-                        await cl.Message(
-                            content=f"### 📦 Final Code\n```python\n{final_code}\n```"
-                        ).send()
+                            if "text" in tool_result and tool_result["text"]:
+                                await cl.Message(content=f"{tool_result["text"]}").send()
 
-                        return
+                            return
 
-                    if "STATUS: FAILED" in status_raw:
-                        await cl.Message(content="❌ **Job Failed.**").send()
-                        return
+                        if job_result["status"] == "failed":
+                            await cl.Message(content="❌ **Job Failed.**").send()
+                            return
         else:
             await cl.Message(content=response_text).send()
 
@@ -141,13 +134,4 @@ def _extract_response(messages: list[BaseMessage]) -> str:
         if isinstance(message, AIMessage) and message.content:
             return str(message.content)
     return ""
-
-def _extract_lines(text: str) -> list[str]:
-    # Break incoming message into an array of text lines (non-empty)
-    lines = [l for l in text.splitlines() if l.strip() != ""]
-    # Fallback to original content if splitting yields nothing (e.g., only whitespace)
-    if not lines:
-        lines = [text]
-    return lines
-
 

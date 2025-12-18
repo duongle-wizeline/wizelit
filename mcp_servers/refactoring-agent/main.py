@@ -1,7 +1,9 @@
 import asyncio
+import difflib
 import os
 import time
 import contextlib
+from typing import Dict, Any
 from utils.bedrock_config import normalize_aws_env, resolve_bedrock_model_id
 
 # FastMCP
@@ -15,6 +17,26 @@ from crewai.process import Process
 # Initialize FastMCP
 mcp = WizelitAgentWrapper("RefactoringCrewAgent", port=1337)
 
+
+def _html_diff_viewer(from_lines: list[str], to_lines: list[str]) -> str:
+    """Compare two texts and generate an HTML difference view."""
+    # Create an HtmlDiff instance
+    # You can use parameters like wrapcolumn=80 to control line wrapping
+    differ = difflib.HtmlDiff(wrapcolumn=40)
+
+    # Generate the HTML output (as a single string)
+    # make_table includes HTML table boilerplate
+    html_diff = differ.make_table(from_lines, to_lines, fromdesc='Original', todesc='Modified')
+
+    return html_diff
+
+def _extract_lines(text: str) -> list[str]:
+    # Break incoming message into an array of text lines (non-empty)
+    lines = [l for l in text.splitlines() if l.strip() != ""]
+    # Fallback to original content if splitting yields nothing (e.g., only whitespace)
+    if not lines:
+        lines = [text]
+    return lines
 
 async def _run_refactoring_crew(job: Job, code: str, instruction: str):
     """
@@ -137,11 +159,29 @@ async def _run_refactoring_crew(job: Job, code: str, instruction: str):
         final_code = (final_code or getattr(crew_output, "raw", "") or "").strip()
         job.logger.info("✅ Refactor completed successfully.")
 
-        return final_code
+        # HTML diff viewer
+        from_lines = _extract_lines(code)
+        to_lines = _extract_lines(final_code)
+        html_diff = _html_diff_viewer(
+            from_lines=from_lines,
+            to_lines=to_lines,
+        )
+
+        return {
+            "code": final_code,
+            "html":
+                "<div>" +
+                "<h6 class='font-bold'>✅ Refactoring Complete!</h6>" +
+                "<br/>" +
+                "<p>Here is the side-by-side comparison:</p>" +
+                html_diff +
+                "</div>"
+        }
 
     except Exception as e:
         job.logger.error(f"❌ [System] Error: {str(e)}")
         raise
+
 
 @mcp.ingest(
     is_long_running=True,
@@ -157,26 +197,36 @@ async def start_refactoring_job(code_snippet: str, instruction: str, job: Job) -
     return job.id
 
 @mcp.ingest()
-async def get_job_status(job_id: str) -> str:
+async def get_job_status(job_id: str) -> Dict[str, Any]:
     """
     Checks the status of a refactoring job. Returns logs or the final result.
     """
     job = mcp.get_job(job_id)
     if not job:
-        return "Error: Job ID not found."
+        return {"error": "Job ID not found."}
 
     tail_n = int(os.getenv("JOB_LOG_TAIL", "25"))
     logs = mcp.get_job_logs(job_id) or []
     tail = "\n".join(logs[-tail_n:]) if logs else "[no logs yet]"
 
     if job.status == "running":
-        return f"STATUS: RUNNING\nLOGS:\n{tail}"
+        return {
+            "status": "running",
+            "logs": tail
+        }
     elif job.status == "completed":
         # Include logs even on completion so callers don't miss the final wrap-up lines.
-        return f"STATUS: COMPLETED\nLOGS:\n{tail}\nRESULT:\n{job.result or ''}"
+        return {
+            "status": "completed",
+            "logs": tail,
+            "result": job.result or ""
+        }
     else:
-        return f"STATUS: FAILED\nLOGS:\n{tail}\nERROR: {job.error or 'Unknown error'}"
-
+        return {
+            "status": "failed",
+            "logs": tail,
+            "error": job.error or "Unknown error"
+        }
 
 @mcp.ingest()
 async def get_jobs() -> list[Job]:
