@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Iterable, Sequence
 
 from langchain_core.language_models import BaseLanguageModel
-from langchain_core.messages import SystemMessage, AIMessage
+from langchain_core.messages import SystemMessage, AIMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, MessagesState, StateGraph
@@ -23,7 +23,9 @@ def build_graph(
     async def query_or_respond(state: MessagesState):
         """Let the model decide whether it needs to call a tool."""
         history = state.get("messages", [])
-        response = await llm_with_tools.ainvoke(history)
+        # Normalize tool messages to fix Bedrock validation issues on subsequent calls
+        normalized_history = _normalize_tool_messages(history)
+        response = await llm_with_tools.ainvoke(normalized_history)
         return {"messages": [response]}
 
     async def generate(state: MessagesState):
@@ -60,7 +62,9 @@ def build_graph(
 
         # Force the System Prompt to be the last thing the model considers
         prompt = [SystemMessage(content=system_message_content)] + conversation_messages
-        response = await llm.ainvoke(prompt)
+        # Normalize tool messages before sending to Bedrock
+        normalized_prompt = _normalize_tool_messages(prompt)
+        response = await llm.ainvoke(normalized_prompt)
         return {"messages": [response]}
 
     builder = StateGraph(MessagesState)
@@ -99,3 +103,35 @@ def _stringify_tool_message(message) -> str:
     if isinstance(content, str):
         return content
     return str(content)
+
+
+def _normalize_tool_messages(messages: list) -> list:
+    """
+    Normalize tool messages to fix Bedrock validation issues.
+    
+    When MCP tools return complex content structures with extra fields like 'id',
+    Bedrock rejects them with ValidationException. This function converts tool
+    result content to plain strings.
+    """
+    normalized = []
+    for message in messages:
+        if isinstance(message, ToolMessage):
+            # Convert tool message content to a plain string if it's a complex structure
+            content = message.content
+            if isinstance(content, (list, dict)):
+                # Convert complex structures to string representation
+                string_content = str(content)
+            else:
+                string_content = content
+            
+            # Create a new ToolMessage with normalized string content
+            normalized_msg = ToolMessage(
+                content=string_content,
+                tool_call_id=getattr(message, 'tool_call_id', None),
+                name=getattr(message, 'name', None)
+            )
+            normalized.append(normalized_msg)
+        else:
+            normalized.append(message)
+    return normalized
+
