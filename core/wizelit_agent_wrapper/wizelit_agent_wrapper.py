@@ -2,11 +2,16 @@
 import asyncio
 import inspect
 import logging
-from typing import Callable, Any, Optional, Literal, Dict
+import os
+from typing import Callable, Any, Optional, Literal, Dict, TYPE_CHECKING
 from contextvars import ContextVar
 from fastmcp import FastMCP, Context
 from fastmcp.dependencies import CurrentContext
 from core.wizelit_agent_wrapper.job import Job
+
+if TYPE_CHECKING:
+    from database import DatabaseManager
+    from core.wizelit_agent_wrapper.streaming import LogStreamer
 
 # Reusable framework constants
 LLM_FRAMEWORK_CREWAI = "crewai"
@@ -35,13 +40,27 @@ class WizelitAgentWrapper:
     Built on top of fast-mcp with enhanced streaming and agent framework support.
     """
 
-    def __init__(self, name: str,transport: str = "streamable-http", host: str = "0.0.0.0", port: int = 8080, version: str = "1.0.0"):
+    def __init__(
+        self,
+        name: str,
+        transport: str = "streamable-http",
+        host: str = "0.0.0.0",
+        port: int = 8080,
+        version: str = "1.0.0",
+        db_manager: Optional['DatabaseManager'] = None,
+        enable_streaming: bool = True
+    ):
         """
         Initialize the Wizelit Agent.
 
         Args:
             name: Name of the MCP server
+            transport: Transport protocol (sse, streamable-http, stdio)
+            host: Host address
+            port: Port number
             version: Version string for the server
+            db_manager: Optional DatabaseManager for job persistence
+            enable_streaming: Enable real-time log streaming via Redis
         """
         self._mcp = FastMCP(name=name)
         self._name = name
@@ -51,6 +70,21 @@ class WizelitAgentWrapper:
         self._host = host
         self._transport = transport
         self._port = port
+        self._db_manager = db_manager
+        self._log_streamer = None
+
+        # Initialize log streamer if enabled
+        if enable_streaming:
+            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+            try:
+                from core.wizelit_agent_wrapper.streaming import LogStreamer
+                self._log_streamer = LogStreamer(redis_url)
+                print(f"Log streaming enabled via Redis: {redis_url}")
+            except ImportError:
+                print("Warning: redis package not installed. Log streaming disabled.")
+            except Exception as e:
+                print(f"Warning: Failed to initialize log streamer: {e}")
+
         print(f"WizelitAgentWrapper initialized with name: {name}, transport: {transport}, host: {host}, port: {port}")
 
     def ingest(
@@ -212,7 +246,15 @@ class WizelitAgentWrapper:
         token = None
         # Create Job instance if not provided
         if job is None and is_long_running:
-            job = Job(ctx)
+            job = Job(
+                ctx,
+                db_manager=self._db_manager,
+                log_streamer=self._log_streamer
+            )
+
+            # Persist job to database BEFORE any logs are emitted
+            if self._db_manager:
+                await job.persist_to_db()
 
             # Store job in jobs dictionary for later retrieval
             self._jobs[job.id] = job
@@ -341,6 +383,7 @@ class WizelitAgentWrapper:
     def get_job(self, job_id: str) -> Optional[Job]:
         """
         Get a Job instance by job_id.
+        First checks in-memory cache, then falls back to database.
 
         Args:
             job_id: The job identifier
@@ -348,7 +391,88 @@ class WizelitAgentWrapper:
         Returns:
             Job instance if exists, None otherwise
         """
-        return self._jobs.get(job_id)
+        # Check in-memory first
+        job = self._jobs.get(job_id)
+        if job:
+            return job
+
+        # If not in memory and DB is available, try to load from DB
+        # Note: This returns None for now as we'd need async context
+        # Use get_job_from_db_async for async retrieval
+        return None
+
+    async def get_job_from_db(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve job data from database asynchronously.
+
+        Args:
+            job_id: The job identifier
+
+        Returns:
+            Dict with job data or None if not found
+        """
+        if not self._db_manager:
+            return None
+
+        try:
+            from models.job import JobModel
+            from sqlalchemy import select
+
+            async with self._db_manager.get_session() as session:
+                result = await session.execute(
+                    select(JobModel).where(JobModel.id == job_id)
+                )
+                job_model = result.scalar_one_or_none()
+
+                if not job_model:
+                    return None
+
+                return {
+                    "id": job_model.id,
+                    "status": job_model.status,
+                    "result": job_model.result,
+                    "error": job_model.error,
+                    "created_at": job_model.created_at.isoformat() if job_model.created_at else None,
+                    "updated_at": job_model.updated_at.isoformat() if job_model.updated_at else None,
+                }
+        except Exception as e:
+            logging.error(f"Error retrieving job from database: {e}")
+            return None
+
+    async def get_job_logs_from_db(self, job_id: str, limit: int = 100) -> Optional[list]:
+        """
+        Retrieve job logs from database asynchronously.
+
+        Args:
+            job_id: The job identifier
+            limit: Maximum number of logs to retrieve
+
+        Returns:
+            List of log messages or None if job not found
+        """
+        if not self._db_manager:
+            return None
+
+        try:
+            from models.job import JobLogModel
+            from sqlalchemy import select
+
+            async with self._db_manager.get_session() as session:
+                result = await session.execute(
+                    select(JobLogModel)
+                    .where(JobLogModel.job_id == job_id)
+                    .order_by(JobLogModel.timestamp.asc())
+                    .limit(limit)
+                )
+                log_models = result.scalars().all()
+
+                return [
+                    f"[{log.level}] [{log.timestamp.strftime('%H:%M:%S')}] {log.message}"
+                    for log in log_models
+                ]
+        except Exception as e:
+            logging.error(f"Error retrieving logs from database: {e}")
+            return None
 
     def get_jobs(self) -> list[Job]:
         """

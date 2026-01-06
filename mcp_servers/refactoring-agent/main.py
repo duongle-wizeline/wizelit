@@ -9,13 +9,28 @@ from utils.bedrock_config import normalize_aws_env, resolve_bedrock_model_id
 # FastMCP
 from core.wizelit_agent_wrapper import WizelitAgentWrapper, Job
 
+# Database (optional - for persistence)
+try:
+    from database import DatabaseManager
+    db_manager = DatabaseManager()
+except ImportError:
+    db_manager = None
+    print("Warning: DatabaseManager not available. Job persistence disabled.")
+
 # CrewAI
 from crewai import Agent, Task, Crew
 from crewai.llm import LLM
 from crewai.process import Process
 
-# Initialize FastMCP
-mcp = WizelitAgentWrapper("RefactoringCrewAgent", port=1337)
+# Initialize FastMCP with database manager and streaming
+enable_streaming = os.getenv("ENABLE_LOG_STREAMING", "true").lower() == "true"
+mcp = WizelitAgentWrapper(
+    "RefactoringCrewAgent",
+    port=1337,
+    transport="sse",
+    db_manager=db_manager,
+    enable_streaming=enable_streaming
+)
 
 
 def _html_diff_viewer(from_lines: list[str], to_lines: list[str]) -> str:
@@ -200,11 +215,30 @@ async def start_refactoring_job(code_snippet: str, instruction: str, job: Job) -
 async def get_job_status(job_id: str) -> Dict[str, Any]:
     """
     Checks the status of a refactoring job. Returns logs or the final result.
+    Falls back to database if job not found in memory.
     """
+    # Try in-memory first
     job = mcp.get_job(job_id)
-    if not job:
-        return {"error": "Job ID not found."}
 
+    # If not in memory, try database
+    if not job:
+        job_data = await mcp.get_job_from_db(job_id)
+        if not job_data:
+            return {"error": "Job ID not found."}
+
+        # Get logs from database
+        logs = await mcp.get_job_logs_from_db(job_id, limit=100)
+        tail_n = int(os.getenv("JOB_LOG_TAIL", "25"))
+        tail = "\n".join(logs[-tail_n:]) if logs else "[no logs in database]"
+
+        return {
+            "status": job_data["status"],
+            "logs": tail,
+            "result": job_data.get("result"),
+            "error": job_data.get("error")
+        }
+
+    # Job found in memory - return live data
     tail_n = int(os.getenv("JOB_LOG_TAIL", "25"))
     logs = mcp.get_job_logs(job_id) or []
     tail = "\n".join(logs[-tail_n:]) if logs else "[no logs yet]"

@@ -4,3 +4,4 @@ from .thread import Thread
 from .step import Step
 from .element import Element
 from .feedback import Feedback
+from .job import JobModel, JobLogModel, JobStatus

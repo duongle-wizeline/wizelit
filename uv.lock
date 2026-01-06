@@ -5006,6 +5006,7 @@ dependencies = [
     { name = "plotly" },
     { name = "pygithub" },
     { name = "python-dotenv" },
+    { name = "redis" },
     { name = "requests" },
     { name = "sqlalchemy" },
 ]
@@ -5028,6 +5029,7 @@ requires-dist = [
     { name = "plotly", specifier = ">=5.24.1" },
     { name = "pygithub", specifier = ">=2.4.0" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
+    { name = "redis", specifier = ">=5.0.0" },
     { name = "requests", specifier = ">=2.32.3" },
     { name = "sqlalchemy", specifier = ">=2.0.45" },
 ]
