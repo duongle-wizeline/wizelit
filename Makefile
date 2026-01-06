@@ -6,9 +6,6 @@ setup:
 init-streaming:
 	uv run python scripts/init_streaming.py
 
-test-streaming:
-	uv run python scripts/test_streaming.py
-
 monitor-redis:
 	uv run python scripts/monitor_redis.py
 
