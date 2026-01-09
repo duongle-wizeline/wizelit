@@ -49,14 +49,14 @@ class AgentRuntime:
 
         try:
             await connect_and_load("Refactoring Agent", "http://127.0.0.1:1337/sse")
-            await connect_and_load("Code Scout", "http://127.0.0.1:1338/sse")
+            # await connect_and_load("Code Scout", "http://127.0.0.1:1338/sse")
 
             # Bedrock LLM
             region = normalize_aws_env(default_region="us-east-1")
             model_id = resolve_bedrock_model_id()
             llm = ChatBedrock(
                 model_id=model_id,
-                model_kwargs={"temperature": 0},
+                model_kwargs={"temperature": 0, "max_tokens": 15000},
                 region_name=region,
             )
 

@@ -218,7 +218,6 @@ async def get_job_status(job_id: str) -> Dict[str, Any]:
         # Include logs even on completion so callers don't miss the final wrap-up lines.
         return {
             "status": "completed",
-            "logs": tail,
             "result": job.result or ""
         }
     else:

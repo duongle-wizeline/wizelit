@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Iterable, Sequence
 
 from langchain_core.language_models import BaseLanguageModel
@@ -8,6 +9,8 @@ from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
+
+from res import tool_response_text
 
 
 def build_graph(
@@ -33,6 +36,7 @@ def build_graph(
 
         # 1. Capture Tool Outputs
         tool_messages = _gather_recent_tool_messages(state.get("messages", []))
+        print(f"\n\n\ntool_messages: {tool_messages}\n\n\n")
         docs_content = "\n\n".join(_stringify_tool_message(msg) for msg in tool_messages)
 
         # 2. STRICT System Prompt
@@ -50,8 +54,10 @@ def build_graph(
             "1) For analysis/search requests → Use Code Scout tools and summarize findings.\n"
             "2) For code modification requests → Use start_refactoring_job and respond ONLY with: 'I have started the job. JOB_ID: <the_id>.'\n"
             "3) Never write Python code yourself.\n"
+            "4) For checking job status, use get_job_status and respond ONLY with tool output.\n"
             f"\n\nCONTEXT FROM TOOLS:\n{docs_content}"
         )
+        print(f"\n\n\nSystem Prompt: {system_message_content}\n\n\n")
 
         conversation_messages = [
             message
@@ -65,6 +71,7 @@ def build_graph(
         # Normalize tool messages before sending to Bedrock
         normalized_prompt = _normalize_tool_messages(prompt)
         response = await llm.ainvoke(normalized_prompt)
+        print(f"\n\nFinal Response: {response}\n\n\n")
         return {"messages": [response]}
 
     builder = StateGraph(MessagesState)
@@ -120,7 +127,7 @@ def _normalize_tool_messages(messages: list) -> list:
             content = message.content
             if isinstance(content, (list, dict)):
                 # Convert complex structures to string representation
-                string_content = str(content)
+                string_content = json.dumps(content)
             else:
                 string_content = content
 
