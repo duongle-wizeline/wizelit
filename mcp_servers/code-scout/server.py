@@ -331,7 +331,6 @@ async def code_scout_symbol_usage(
 
 @mcp.ingest(is_long_running=False, description="Run grep via Code Scout (formatted text).")
 async def code_scout_grep(
-    job: Job,
     target: str,
     pattern: str,
     file_pattern: str = "*.py",
