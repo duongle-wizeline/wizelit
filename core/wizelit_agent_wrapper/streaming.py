@@ -126,11 +126,11 @@ class LogStreamer:
                 event["error"] = error
 
             channel = f"job:{job_id}:status"
-            await redis_client.publish(channel, json.dumps(event))
-            logger.info(f"Published status change for job {job_id}: {status}")
+            serialized = json.dumps(event)
+            await redis_client.publish(channel, serialized)
 
         except Exception as e:
-            logger.error(f"Failed to publish status change for job {job_id}: {e}")
+            logger.error(f"Failed to publish status change for job {job_id}: {e}", exc_info=True)
 
     async def subscribe_logs(
         self,

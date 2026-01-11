@@ -3,6 +3,7 @@ import asyncio
 import inspect
 import logging
 import os
+import time
 from typing import Callable, Any, Optional, Literal, Dict, TYPE_CHECKING
 from contextvars import ContextVar
 from fastmcp import FastMCP, Context
@@ -19,6 +20,9 @@ LLM_FRAMEWORK_LANGCHAIN = "langchain"
 LLM_FRAMEWORK_LANGGRAPH = "langraph"
 
 LlmFrameworkType = Literal['crewai', 'langchain', 'langraph', None]
+
+# Auto-detection threshold: if execution takes longer than this (seconds), job runs async
+DEFAULT_ASYNC_THRESHOLD_SECONDS = float(os.getenv("ASYNC_THRESHOLD_SECONDS", "2.0"))
 
 # Context variable for current Job instance
 _current_job: ContextVar[Optional[Job]] = ContextVar('_current_job', default=None)
@@ -48,7 +52,8 @@ class WizelitAgentWrapper:
         port: int = 8080,
         version: str = "1.0.0",
         db_manager: Optional['DatabaseManager'] = None,
-        enable_streaming: bool = True
+        enable_streaming: bool = True,
+        async_threshold_seconds: Optional[float] = None
     ):
         """
         Initialize the Wizelit Agent.
@@ -61,6 +66,7 @@ class WizelitAgentWrapper:
             version: Version string for the server
             db_manager: Optional DatabaseManager for job persistence
             enable_streaming: Enable real-time log streaming via Redis
+            async_threshold_seconds: Threshold for auto-detecting async execution (default: 2.0s)
         """
         self._mcp = FastMCP(name=name)
         self._name = name
@@ -72,6 +78,7 @@ class WizelitAgentWrapper:
         self._port = port
         self._db_manager = db_manager
         self._log_streamer = None
+        self._async_threshold = async_threshold_seconds or DEFAULT_ASYNC_THRESHOLD_SECONDS
 
         # Initialize log streamer if enabled
         if enable_streaming:
@@ -89,20 +96,26 @@ class WizelitAgentWrapper:
 
     def ingest(
         self,
-        is_long_running: bool = False,
+        is_long_running: Optional[bool] = None,
         description: Optional[str] = None,
     ):
         """
         Decorator to convert a function into an MCP tool.
 
         Args:
-            is_long_running: If True, enables progress reporting
+            is_long_running: Optional override for async detection. If None, auto-detects based on execution time.
             description: Human-readable description of the tool
 
         Usage:
-            @agent.ingest(is_long_running=True, description="Forecasts revenue")
+            @agent.ingest(description="Forecasts revenue")
             def forecast_revenue(region: str) -> str:
                 return "Revenue projection: $5M"
+
+            # Or explicitly set long-running behavior:
+            @agent.ingest(is_long_running=True, description="Heavy processing")
+            def heavy_task(data: str, job: Job) -> str:
+                # Your long-running code here
+                return result
         """
         def decorator(func: Callable) -> Callable:
             # Store original function metadata
@@ -119,12 +132,12 @@ class WizelitAgentWrapper:
             # This follows fast-mcp v2.14+ convention for dependency injection
             params_list = list(sig.parameters.values())
 
-            # Check if function has 'job' parameter (for backward compatibility)
+            # Check if function has 'job' parameter (indicates potential long-running operation)
             has_job_param = sig.parameters.get('job') is not None
 
-
-            if is_long_running and not has_job_param:
-                raise ValueError("is_long_running is True but 'job' parameter is not provided")
+            # Validate: if is_long_running is explicitly True, job param is required
+            if is_long_running is True and not has_job_param:
+                raise ValueError("is_long_running=True requires 'job: Job' parameter in function signature")
 
 
             # Remove original 'job' parameter if it exists
@@ -155,7 +168,7 @@ class WizelitAgentWrapper:
 
             # Create the wrapper function
             async def tool_wrapper(*args, **kwargs):
-                """MCP-compliant wrapper with streaming."""
+                """MCP-compliant wrapper with auto-detection and standardized return schema."""
                 # Extract ctx from kwargs (injected by fast-mcp via CurrentContext())
                 ctx = kwargs.pop('ctx', None)
                 if ctx is None:
@@ -194,7 +207,7 @@ class WizelitAgentWrapper:
 
                 return await self._execute_tool(
                     func, ctx, is_async, is_long_running,
-                    tool_name, job, **func_kwargs
+                    tool_name, job, has_job_param, **func_kwargs
                 )
 
 
@@ -236,25 +249,36 @@ class WizelitAgentWrapper:
         func: Callable,
         ctx: Context,
         is_async: bool,
-        is_long_running: bool,
+        is_long_running: Optional[bool],
         tool_name: str,
         job: Optional[Job] = None,
+        has_job_param: bool = False,
         **kwargs
-    ) -> Any:
-        """Central execution method for all tools."""
+    ) -> Dict[str, Any]:
+        """Central execution method with auto-detection and standardized return schema.
+
+        Returns:
+            Dict with standardized schema:
+            - {"mode": "sync", "result": ...} for fast operations
+            - {"mode": "async", "job_id": "JOB-xxx"} for long-running operations
+        """
 
         token = None
-        # Create Job instance if not provided
-        if job is None and is_long_running:
+
+        # Auto-detection logic:
+        # 1. If is_long_running explicitly set, use that
+        # 2. If function has 'job' parameter, create job for potential async execution
+        # 3. Try fast path first, switch to async if exceeds threshold
+
+        should_create_job = is_long_running is True or has_job_param
+
+        # Create Job instance if needed
+        if job is None and should_create_job:
             job = Job(
                 ctx,
                 db_manager=self._db_manager,
                 log_streamer=self._log_streamer
             )
-
-            # Persist job to database BEFORE any logs are emitted
-            if self._db_manager:
-                await job.persist_to_db()
 
             # Store job in jobs dictionary for later retrieval
             self._jobs[job.id] = job
@@ -265,11 +289,87 @@ class WizelitAgentWrapper:
         try:
             try:
                 # Add job to kwargs if function signature includes it
-                func_sig = inspect.signature(func)
-                if 'job' in func_sig.parameters and job is not None:
+                if has_job_param and job is not None:
                     kwargs['job'] = job
 
-                # Execute function (async or sync)
+                # If explicitly marked as long-running, use async mode immediately
+                if is_long_running is True:
+                    # Persist job to database BEFORE execution starts
+                    if self._db_manager:
+                        await job.persist_to_db()
+
+                    # Start async execution with job.run()
+                    logging.info(f"Starting long-running job: {job.id}")
+
+                    # Create the coroutine
+                    if is_async:
+                        coro = func(**kwargs)
+                    else:
+                        # Wrap sync function in async wrapper
+                        async def sync_wrapper():
+                            return await asyncio.to_thread(func, **kwargs)
+                        coro = sync_wrapper()
+
+                    # Run in background
+                    job.run(coro)
+
+                    # Return job ID immediately
+                    return {
+                        "mode": "async",
+                        "job_id": job.id
+                    }
+
+                # Auto-detection mode: try fast path with timeout
+                if is_long_running is None and has_job_param:
+                    # Try to complete within threshold
+                    start_time = time.time()
+
+                    try:
+                        # Execute with timeout
+                        if is_async:
+                            result = await asyncio.wait_for(
+                                func(**kwargs),
+                                timeout=self._async_threshold
+                            )
+                        else:
+                            result = await asyncio.wait_for(
+                                asyncio.to_thread(func, **kwargs),
+                                timeout=self._async_threshold
+                            )
+
+                        # Completed within threshold - return sync result
+                        elapsed = time.time() - start_time
+                        logging.info(f"Tool {tool_name} completed in {elapsed:.2f}s (sync mode)")
+
+                        return {
+                            "mode": "sync",
+                            "result": result
+                        }
+
+                    except asyncio.TimeoutError:
+                        # Exceeded threshold - switch to async mode
+                        logging.info(f"Tool {tool_name} exceeded {self._async_threshold}s threshold, switching to async mode")
+
+                        # Persist job to database
+                        if self._db_manager:
+                            await job.persist_to_db()
+
+                        # Restart execution in background
+                        if is_async:
+                            coro = func(**kwargs)
+                        else:
+                            async def sync_wrapper():
+                                return await asyncio.to_thread(func, **kwargs)
+                            coro = sync_wrapper()
+
+                        job.run(coro)
+
+                        return {
+                            "mode": "async",
+                            "job_id": job.id
+                        }
+
+                # Default: fast synchronous execution (no job parameter)
                 logging.info(f"kwargs: {kwargs}")
                 if is_async:
                     result = await func(**kwargs)
@@ -290,11 +390,16 @@ class WizelitAgentWrapper:
                         logging.warning(f"Function {tool_name} returned None but should return str. Returning empty string.")
                         result = ""
 
-                return result
+                return {
+                    "mode": "sync",
+                    "result": result
+                }
 
             except Exception as e:
-                # Mark job as failed
-                job.status = "failed"
+                # Mark job as failed if it exists
+                if job:
+                    job.status = "failed"
+                    job.error = str(e)
 
                 # Stream error information
                 await ctx.report_progress(
@@ -333,8 +438,14 @@ class WizelitAgentWrapper:
             print(f"🌐 Listening on {host}:{port}")
 
         print(f"🔧 Registered {len(self._tools)} tool(s):")
+        print(f"⚙️  Auto-detection threshold: {self._async_threshold}s")
         for tool_name, tool_info in self._tools.items():
-            lr_status = "⏱️  long-running" if tool_info['is_long_running'] else "⚡ fast"
+            if tool_info['is_long_running'] is True:
+                lr_status = "⏱️  always async"
+            elif tool_info['is_long_running'] is None:
+                lr_status = "🔄 auto-detect"
+            else:
+                lr_status = "⚡ always sync"
             print(f"   • {tool_name} [{lr_status}]")
 
         # Start the server

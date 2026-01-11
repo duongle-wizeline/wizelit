@@ -4,7 +4,14 @@ import uuid
 import asyncio
 import re
 import os
+import sys
 from typing import Dict, Optional
+from pathlib import Path
+
+# Add project root to Python path so imports work
+PROJECT_ROOT = Path(__file__).parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import chainlit as cl
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
@@ -17,6 +24,15 @@ from agent import agent_runtime
 from database import DatabaseManager
 from utils import create_chat_settings
 from utils.diff_viewer import html_diff_viewer
+
+# Import LogStreamer at module level
+try:
+    from core.wizelit_agent_wrapper.streaming import LogStreamer
+    LOGSTREAMER_AVAILABLE = True
+except ImportError as e:
+    print(f"[WARNING] LogStreamer not available: {e}", flush=True)
+    LogStreamer = None
+    LOGSTREAMER_AVAILABLE = False
 
 db_manager = DatabaseManager()
 logger = logging.getLogger(__name__)
@@ -46,11 +62,32 @@ async def main(message: cl.Message):
         )
         response_text = _extract_response(result.get("messages", []))
 
-        # 2. Check for Job ID
-        job_match = re.search(r"JOB_ID:\s*(JOB-[\w-]+)", response_text)
+        # 2. Check for standardized schema or legacy Job ID format
+        # First try to detect if response is a tool call result with standardized schema
+        job_id = None
+        tool_result = None
 
-        if job_match:
-            job_id = job_match.group(1)
+        # Try to parse as JSON (standardized schema)
+        try:
+            import json
+            # Check if the response contains a JSON object
+            if response_text.strip().startswith('{'):
+                parsed = json.loads(response_text)
+                if isinstance(parsed, dict) and "mode" in parsed:
+                    if parsed["mode"] == "async" and "job_id" in parsed:
+                        job_id = parsed["job_id"]
+                    elif parsed["mode"] == "sync" and "result" in parsed:
+                        tool_result = parsed["result"]
+        except json.JSONDecodeError:
+            pass
+
+        # Fallback: legacy regex parsing for backward compatibility
+        if job_id is None and tool_result is None:
+            job_match = re.search(r"JOB_ID:\s*(JOB-[\w-]+)", response_text)
+            if job_match:
+                job_id = job_match.group(1)
+
+        if job_id:
             await cl.Message(content=f"👨‍✈️ **Captain:** Dispatching Crew... (ID: `{job_id}`)").send()
 
             async with cl.Step(name="Refactoring Crew", type="run") as step:
@@ -63,7 +100,8 @@ async def main(message: cl.Message):
                 if enable_streaming:
                     # Real-time streaming via Redis
                     try:
-                        from core.wizelit_agent_wrapper.streaming import LogStreamer
+                        if not LOGSTREAMER_AVAILABLE:
+                            raise ImportError("LogStreamer not available")
 
                         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
                         log_streamer = LogStreamer(redis_url)
@@ -73,6 +111,7 @@ async def main(message: cl.Message):
 
                         try:
                             async for log_event in log_streamer.subscribe_logs(job_id, timeout=timeout):
+
                                 # Handle log messages
                                 if "message" in log_event:
                                     ts = log_event.get("timestamp", "")[:8]  # HH:MM:SS
@@ -92,25 +131,43 @@ async def main(message: cl.Message):
                                     if status == "completed":
                                         tool_result = log_event.get("result")
 
+                                        if tool_result is None:
+                                            await cl.Message(content="✅ **Job completed** (no result returned)").send()
+                                            return
+
                                         if isinstance(tool_result, str):
                                             await cl.Message(content=f"{tool_result}").send()
                                             return
 
-                                        if tool_result and "html" in tool_result and tool_result["html"]:
-                                            html_viewer_element = cl.CustomElement(
-                                                name="RawHtmlRenderElement",
-                                                props={"htmlString": tool_result["html"]}
-                                            )
-                                            cl.user_session.set("html_viewer_el", html_viewer_element)
-                                            await cl.Message(content="", elements=[html_viewer_element]).send()
+                                        # Handle dict results
+                                        if isinstance(tool_result, dict):
+                                            has_content = False
 
-                                        if tool_result and "code" in tool_result and tool_result["code"]:
-                                            await cl.Message(
-                                                content=f"### 📦 Final Code\n```python\n{tool_result['code']}\n```"
-                                            ).send()
+                                            if "html" in tool_result and tool_result["html"]:
+                                                html_viewer_element = cl.CustomElement(
+                                                    name="RawHtmlRenderElement",
+                                                    props={"htmlString": tool_result["html"]}
+                                                )
+                                                cl.user_session.set("html_viewer_el", html_viewer_element)
+                                                await cl.Message(content="", elements=[html_viewer_element]).send()
+                                                has_content = True
 
-                                        if tool_result and "text" in tool_result and tool_result["text"]:
-                                            await cl.Message(content=f"{tool_result['text']}").send()
+                                            if "code" in tool_result and tool_result["code"]:
+                                                await cl.Message(
+                                                    content=f"### 📦 Final Code\n```python\n{tool_result['code']}\n```"
+                                                ).send()
+                                                has_content = True
+
+                                            if "text" in tool_result and tool_result["text"]:
+                                                await cl.Message(content=f"{tool_result['text']}").send()
+                                                has_content = True
+
+                                            if not has_content:
+                                                # Result is a dict but doesn't have expected keys
+                                                await cl.Message(content=f"✅ **Job completed**\n```json\n{json.dumps(tool_result, indent=2)}\n```").send()
+                                        else:
+                                            # Unknown result type
+                                            await cl.Message(content=f"✅ **Job completed**\n```\n{str(tool_result)}\n```").send()
 
                                         return
 
@@ -126,7 +183,7 @@ async def main(message: cl.Message):
                         finally:
                             await log_streamer.close()
 
-                    except ImportError:
+                    except ImportError as e:
                         logger.warning("Redis not available, falling back to polling")
                         enable_streaming = False
                     except Exception as e:
@@ -187,6 +244,29 @@ async def main(message: cl.Message):
                             if job_result["status"] == "failed":
                                 await cl.Message(content="❌ **Job Failed.**").send()
                                 return
+
+        elif tool_result is not None:
+            # Handle synchronous tool result from standardized schema
+            if isinstance(tool_result, str):
+                await cl.Message(content=f"{tool_result}").send()
+            elif isinstance(tool_result, dict):
+                if "html" in tool_result and tool_result["html"]:
+                    html_viewer_element = cl.CustomElement(
+                        name="RawHtmlRenderElement",
+                        props={"htmlString": tool_result["html"]}
+                    )
+                    cl.user_session.set("html_viewer_el", html_viewer_element)
+                    await cl.Message(content="", elements=[html_viewer_element]).send()
+
+                if "code" in tool_result and tool_result["code"]:
+                    await cl.Message(
+                        content=f"### 📦 Final Code\n```python\n{tool_result['code']}\n```"
+                    ).send()
+
+                if "text" in tool_result and tool_result["text"]:
+                    await cl.Message(content=f"{tool_result['text']}").send()
+            else:
+                await cl.Message(content=str(tool_result)).send()
         else:
             await cl.Message(content=response_text).send()
 
