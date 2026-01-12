@@ -1,7 +1,9 @@
 import json
 import logging
+import os
 import uuid
 import asyncio
+import time
 import re
 import os
 from typing import Dict, Optional
@@ -11,15 +13,16 @@ from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 from chainlit.data.storage_clients.base import BaseStorageClient
 from chainlit.types import ThreadDict
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from diff_utils import generate_inline_diff, generate_plotly_diff
 
 from agent import agent_runtime
 from database import DatabaseManager
 from utils import create_chat_settings
-from utils.diff_viewer import html_diff_viewer
+
 
 db_manager = DatabaseManager()
 logger = logging.getLogger(__name__)
+
+TASK_TIMEOUT = os.getenv("TASK_TIMEOUT", 1200)  # Default to 20 minutes
 
 @cl.on_app_startup
 async def on_startup():
@@ -91,28 +94,9 @@ async def main(message: cl.Message):
 
                                     if status == "completed":
                                         tool_result = log_event.get("result")
-
-                                        if isinstance(tool_result, str):
-                                            await cl.Message(content=f"{tool_result}").send()
+                                        # Delegate handling to helper function; if it returns True, we should return from main.
+                                        if await _handle_tool_result(tool_result):
                                             return
-
-                                        if tool_result and "html" in tool_result and tool_result["html"]:
-                                            html_viewer_element = cl.CustomElement(
-                                                name="RawHtmlRenderElement",
-                                                props={"htmlString": tool_result["html"]}
-                                            )
-                                            cl.user_session.set("html_viewer_el", html_viewer_element)
-                                            await cl.Message(content="", elements=[html_viewer_element]).send()
-
-                                        if tool_result and "code" in tool_result and tool_result["code"]:
-                                            await cl.Message(
-                                                content=f"### 📦 Final Code\n```python\n{tool_result['code']}\n```"
-                                            ).send()
-
-                                        if tool_result and "text" in tool_result and tool_result["text"]:
-                                            await cl.Message(content=f"{tool_result['text']}").send()
-
-                                        return
 
                                     elif status == "failed":
                                         error = log_event.get("error", "Unknown error")
@@ -129,6 +113,7 @@ async def main(message: cl.Message):
                     except ImportError:
                         logger.warning("Redis not available, falling back to polling")
                         enable_streaming = False
+
                     except Exception as e:
                         logger.error(f"Streaming error: {e}", exc_info=True)
                         await cl.Message(content=f"⚠️ Streaming unavailable, falling back to polling: {e}").send()
@@ -136,59 +121,32 @@ async def main(message: cl.Message):
 
                 # Fallback to polling if streaming is disabled or failed
                 if not enable_streaming:
-                    last_logs = ""
-                    # Poll for 60 seconds
-                    for _ in range(60):
-                        await asyncio.sleep(1)
-
-                        # Call tool via agent_runtime (Reuse existing connection)
-                        try:
-                            job_status = await agent_runtime.call_tool(
-                                "get_job_status",
-                                {"job_id": job_id},
-                            )
-                            # Extract text
-                            job_result = json.loads(job_status.content[0].text)
-                        except Exception as e:
-                            job_result = {"error": f"Error polling: {e}"}
-
-                        # Update UI
-                        if "logs" in job_result and job_result["logs"] and job_result["logs"] != last_logs:
-                            step.output = job_result["logs"]
-                            await step.update()
-                            last_logs = job_result["logs"]
-
-                        if "status" in job_result:
-                            if job_result["status"] == "completed":
-                                tool_result = job_result["result"]
-
-                                if isinstance(tool_result, str):
-                                    await cl.Message(content=f"{tool_result}").send()
-                                    return
-
-                                if "html" in tool_result and tool_result["html"]:
-                                    html_viewer_element = cl.CustomElement(
-                                        name="RawHtmlRenderElement",
-                                        props={"htmlString": tool_result["html"]}
-                                    )
-                                    cl.user_session.set("html_viewer_el", html_viewer_element)
-                                    await cl.Message(content="", elements=[html_viewer_element]).send()
-
-                                if "code" in tool_result and tool_result["code"]:
-                                    await cl.Message(
-                                        content=f"### 📦 Final Code\n```python\n{tool_result['code']}\n```"
-                                    ).send()
-
-                                if "text" in tool_result and tool_result["text"]:
-                                    await cl.Message(content=f"{tool_result['text']}").send()
-
-                                return
-
-                            if job_result["status"] == "failed":
-                                await cl.Message(content="❌ **Job Failed.**").send()
-                                return
+                    await _polling_for_job(job_id, step)
         else:
-            await cl.Message(content=response_text).send()
+            try:
+                # Try to parse response as JSON
+                response_json = json.loads(response_text)
+
+                if "status" in response_json:
+                    if response_json["status"] == "completed":
+                        tool_result = response_json["result"]
+
+                        # Delegate handling to helper function; if it returns True, we should return from main.
+                        if await _handle_tool_result(tool_result):
+                            return
+
+                    if response_json["status"] == "failed":
+                        await cl.Message(content="❌ **Job Failed.**").send()
+                        return
+
+                    if "logs" in response_json:
+                        await cl.Message(content=response_json["logs"]).send()
+                        return
+                else:
+                    await cl.Message(content=response_text).send()
+            except json.JSONDecodeError:
+                # Fallback to plain text response
+                await cl.Message(content=response_text).send()
 
     except Exception as e:
         logger.exception("Error in main loop")
@@ -211,9 +169,83 @@ def oauth_callback(provider_id: str, token: str, raw_user_data: Dict[str, str], 
 def get_data_layer():
     return SQLAlchemyDataLayer(conninfo=db_manager.DATABASE_URL, storage_provider=BaseStorageClient)
 
+async def _handle_tool_result(tool_result) -> bool:
+    """
+    Handle the tool result by sending the appropriate messages.
+    Returns True if handling is terminal and the caller should return.
+    """
+    if isinstance(tool_result, str):
+        await cl.Message(content=f"{tool_result}").send()
+        return True
+
+    if isinstance(tool_result, dict):
+        if "html" in tool_result and tool_result["html"]:
+            html_viewer_element = cl.CustomElement(name="RawHtmlRenderElement", props={"htmlString": tool_result["html"]})
+            # Store the element if we want to update it server side at a later stage.
+            cl.user_session.set("html_viewer_el", html_viewer_element)
+            await cl.Message(content="", elements=[html_viewer_element]).send()
+
+        if "code" in tool_result and tool_result["code"]:
+            await cl.Message(
+                content=f"### 📦 Final Code\n```python\n{tool_result['code']}\n```"
+            ).send()
+
+        if "text" in tool_result and tool_result["text"]:
+            await cl.Message(content=f"{tool_result['text']}").send()
+
+        return True
+
+    return False
+
 def _extract_response(messages: list[BaseMessage]) -> str:
     for message in reversed(messages):
         if isinstance(message, AIMessage) and message.content:
             return str(message.content)
     return ""
 
+async def _polling_for_job(job_id: str, step: cl.Step):
+    last_logs = ""
+    job_status = ""
+
+    # Apply optional timeout from TASK_TIMEOUT (seconds)
+    timeout = float(TASK_TIMEOUT)
+    start_time = time.monotonic()
+
+    while job_status not in ["completed", "failed"]:
+        await asyncio.sleep(1)
+
+        # Check for timeout
+        if (time.monotonic() - start_time) > timeout:
+            await cl.Message(content=f"⏳ **Timeout:** Job {job_id} takes too long to complete. You may check it status later.").send()
+            return
+
+        # Call tool via agent_runtime (Reuse existing connection)
+        try:
+            job = await agent_runtime.call_tool(
+                "get_job_status",
+                {"job_id": job_id},
+            )
+            # Extract text
+            job_result = json.loads(job.content[0].text)
+        except Exception as e:
+            job_result = {"error": f"Error polling: {e}"}
+
+        # Update UI
+        if "logs" in job_result and job_result["logs"] and job_result["logs"] != last_logs:
+            step.output = job_result["logs"]
+            await step.update()
+            last_logs = job_result["logs"]
+
+        if "status" in job_result:
+            job_status = job_result["status"]
+
+            if job_result["status"] == "completed":
+                tool_result = job_result["result"]
+
+                # Delegate handling to helper function; if it returns True, we should return from main.
+                if await _handle_tool_result(tool_result):
+                    return
+
+            if job_result["status"] == "failed":
+                await cl.Message(content="❌ **Job Failed.**").send()
+                return

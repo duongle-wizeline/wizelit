@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Iterable, Sequence
 
 from langchain_core.language_models import BaseLanguageModel
@@ -33,6 +34,11 @@ def build_graph(
 
         # 1. Capture Tool Outputs
         tool_messages = _gather_recent_tool_messages(state.get("messages", []))
+
+        for message in tool_messages:
+            if isinstance(message, ToolMessage) and message.name == "get_job_status":
+                return {"messages": [AIMessage(content=message.content[0]["text"])]}
+
         docs_content = "\n\n".join(_stringify_tool_message(msg) for msg in tool_messages)
 
         # 2. STRICT System Prompt
@@ -85,7 +91,13 @@ def build_graph(
         builder.add_edge("query_or_respond", "generate")
 
     builder.add_edge("generate", END)
-    return builder.compile(checkpointer=memory)
+
+    """Convert the graph to a Mermaid string."""
+    compiled_graph = builder.compile(checkpointer=memory)
+    compiled_graph_mermaid = compiled_graph.get_graph().draw_mermaid()
+    print(f"\n\n\nCompiled Graph Mermaid: {compiled_graph_mermaid}\n\n\n")
+
+    return compiled_graph
 
 
 def _gather_recent_tool_messages(messages: Iterable) -> list:
@@ -120,7 +132,7 @@ def _normalize_tool_messages(messages: list) -> list:
             content = message.content
             if isinstance(content, (list, dict)):
                 # Convert complex structures to string representation
-                string_content = str(content)
+                string_content = json.dumps(content)
             else:
                 string_content = content
 
@@ -135,3 +147,7 @@ def _normalize_tool_messages(messages: list) -> list:
             normalized.append(message)
     return normalized
 
+async def _graph_to_mermaid(self) -> str:
+    """Convert the graph to a Mermaid string."""
+    computed_graph = await self.get_graph()
+    return computed_graph.get_graph().draw_mermaid()
