@@ -96,14 +96,13 @@ class WizelitAgentWrapper:
 
     def ingest(
         self,
-        is_long_running: Optional[bool] = None,
         description: Optional[str] = None,
     ):
         """
         Decorator to convert a function into an MCP tool.
 
         Args:
-            is_long_running: Optional override for async detection. If None, auto-detects based on execution time.
+            Note: long-running behavior is now inferred from the function signature.
             description: Human-readable description of the tool
 
         Usage:
@@ -111,8 +110,8 @@ class WizelitAgentWrapper:
             def forecast_revenue(region: str) -> str:
                 return "Revenue projection: $5M"
 
-            # Or explicitly set long-running behavior:
-            @agent.ingest(is_long_running=True, description="Heavy processing")
+            # Example long-running tool (detects `job: Job` parameter automatically):
+            @agent.ingest(description="Heavy processing")
             def heavy_task(data: str, job: Job) -> str:
                 # Your long-running code here
                 return result
@@ -134,10 +133,6 @@ class WizelitAgentWrapper:
 
             # Check if function has 'job' parameter (indicates potential long-running operation)
             has_job_param = sig.parameters.get('job') is not None
-
-            # Validate: if is_long_running is explicitly True, job param is required
-            if is_long_running is True and not has_job_param:
-                raise ValueError("is_long_running=True requires 'job: Job' parameter in function signature")
 
 
             # Remove original 'job' parameter if it exists
@@ -206,8 +201,7 @@ class WizelitAgentWrapper:
                     func_kwargs = kwargs
 
                 return await self._execute_tool(
-                    func, ctx, is_async, is_long_running,
-                    tool_name, job, has_job_param, **func_kwargs
+                    func, ctx, is_async, tool_name, job, has_job_param, **func_kwargs
                 )
 
 
@@ -233,11 +227,12 @@ class WizelitAgentWrapper:
                 exclude_args.append('job')
             registered_tool = self._mcp.tool(description=tool_description, exclude_args=exclude_args)(tool_wrapper)
 
-            # Store tool metadata
+            # Store tool metadata. If function accepts a `job` parameter, treat as auto-detect (None).
+            # Otherwise mark as always-sync (False).
             self._tools[tool_name] = {
                 'function': func,
                 'wrapper': registered_tool,
-                'is_long_running': is_long_running,
+                'is_long_running': None if has_job_param else False,
             }
 
             # Return original function so it can still be called directly
@@ -249,7 +244,6 @@ class WizelitAgentWrapper:
         func: Callable,
         ctx: Context,
         is_async: bool,
-        is_long_running: Optional[bool],
         tool_name: str,
         job: Optional[Job] = None,
         has_job_param: bool = False,
@@ -265,12 +259,15 @@ class WizelitAgentWrapper:
 
         token = None
 
+        # Determine long-running flag from stored tool metadata
+        is_long_running = self._tools.get(tool_name, {}).get('is_long_running', None)
+
         # Auto-detection logic:
-        # 1. If is_long_running explicitly set, use that
+        # 1. If is_long_running explicitly set (True/False), use that
         # 2. If function has 'job' parameter, create job for potential async execution
         # 3. Try fast path first, switch to async if exceeds threshold
 
-        should_create_job = is_long_running is True or has_job_param
+        should_create_job = (is_long_running is True) or has_job_param
 
         # Create Job instance if needed
         if job is None and should_create_job:

@@ -199,14 +199,13 @@ async def _run_refactoring_crew(job: Job, code: str, instruction: str):
 
 
 @mcp.ingest(
-    is_long_running=True,
     description="Submits a Python code snippet to the Engineering Crew for refactoring."
 )
 async def start_refactoring_job(code_snippet: str, instruction: str, job: Job):
     """
     Submits a Python code snippet to the Engineering Crew for refactoring.
 
-    With the universal wrapper and is_long_running=True:
+    With the universal wrapper and the presence of a `job: Job` parameter:
     - The wrapper automatically detects this is a long-running operation
     - Wraps this function's coroutine with job.run()
     - Returns {"mode": "async", "job_id": "JOB-xxx"} immediately
