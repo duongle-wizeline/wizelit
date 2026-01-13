@@ -38,6 +38,45 @@ logger = logging.getLogger(__name__)
 
 TASK_TIMEOUT = os.getenv("TASK_TIMEOUT", 1200)  # Default to 20 minutes
 
+def _parse_logs_from_mcp_response(status_result) -> Optional[str]:
+    """
+    Extract logs from MCP tool response.
+
+    Args:
+        status_result: Response from get_job_status tool
+
+    Returns:
+        Log string or None if not found
+    """
+    if hasattr(status_result, 'structuredContent'):
+        structured = status_result.structuredContent
+        if isinstance(structured, dict) and 'result' in structured:
+            result_data = structured['result']
+            if isinstance(result_data, dict) and 'logs' in result_data:
+                return result_data['logs']
+    elif isinstance(status_result, dict):
+        if 'logs' in status_result:
+            return status_result['logs']
+        elif 'result' in status_result and isinstance(status_result['result'], dict):
+            return status_result['result'].get('logs')
+    return None
+
+
+def _format_logs(logs_str: str) -> list[str]:
+    """
+    Format log string into list of log lines.
+
+    Args:
+        logs_str: Raw log string
+
+    Returns:
+        List of formatted log lines
+    """
+    if not logs_str or logs_str == "[no logs yet]":
+        return []
+    return [line for line in logs_str.split("\n") if line.strip()]
+
+
 @cl.on_app_startup
 async def on_startup():
     await db_manager.init_db()
@@ -111,19 +150,32 @@ async def main(message: cl.Message):
                         accumulated_logs = []
                         timeout = float(os.getenv("LOG_STREAM_TIMEOUT_SECONDS", "300"))
 
+                        # Fetch historical logs before subscribing to Redis
+                        try:
+                            status_result = await agent_runtime.call_tool("get_job_status", {"job_id": job_id})
+                            historical_logs = _parse_logs_from_mcp_response(status_result)
+
+                            if historical_logs:
+                                accumulated_logs = _format_logs(historical_logs)
+                                if accumulated_logs:
+                                    step.output = "\n".join(accumulated_logs)
+                                    await step.update()
+                        except Exception as e:
+                            logger.error(f"Could not fetch historical logs: {e}", exc_info=True)
+
                         try:
                             async for log_event in log_streamer.subscribe_logs(job_id, timeout=timeout):
 
-                                # Handle log messages
+                                # Handle log messages from Redis
                                 if "message" in log_event:
-                                    ts = log_event.get("timestamp", "")[:8]  # HH:MM:SS
+                                    ts_full = log_event.get("timestamp", "")
+                                    ts = ts_full[11:19] if len(ts_full) >= 19 else ""  # Extract HH:MM:SS from ISO
                                     level = log_event.get("level", "INFO")
                                     msg = log_event.get("message", "")
                                     formatted = f"[{level}] [{ts}] {msg}"
                                     accumulated_logs.append(formatted)
 
-                                    # Update UI with latest logs
-                                    step.output = "\n".join(accumulated_logs[-25:])  # Show last 25 lines
+                                    step.output = "\n".join(accumulated_logs)
                                     await step.update()
 
                                 # Handle status changes
@@ -131,8 +183,23 @@ async def main(message: cl.Message):
                                     status = log_event["status"]
 
                                     if status == "completed":
+                                        # Wait briefly for final log messages
+                                        await asyncio.sleep(0.5)
+
+                                        # Fetch complete final logs to ensure nothing is missed
+                                        try:
+                                            final_status = await agent_runtime.call_tool("get_job_status", {"job_id": job_id})
+                                            final_logs = _parse_logs_from_mcp_response(final_status)
+
+                                            if final_logs:
+                                                accumulated_logs = _format_logs(final_logs)
+                                                if accumulated_logs:
+                                                    step.output = "\n".join(accumulated_logs)
+                                                    await step.update()
+                                        except Exception as e:
+                                            logger.warning(f"Could not fetch final logs: {e}")
+
                                         tool_result = log_event.get("result")
-                                        # Delegate handling to helper function; if it returns True, we should return from main.
                                         if await _handle_tool_result(tool_result):
                                             return
 
