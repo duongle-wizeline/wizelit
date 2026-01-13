@@ -63,6 +63,7 @@ async def main(message: cl.Message):
             config=config,
         )
         response_text = _extract_response(result.get("messages", []))
+        print(f"\n\n[DEBUG] Agent Response: {response_text}\n\n", flush=True)
 
         # 2. Check for standardized schema or legacy Job ID format
         # First try to detect if response is a tool call result with standardized schema
@@ -162,53 +163,25 @@ async def main(message: cl.Message):
                     await _polling_for_job(job_id, step)
 
         elif tool_result is not None:
-            # Handle synchronous tool result from standardized schema
-            if isinstance(tool_result, str):
-                await cl.Message(content=f"{tool_result}").send()
-            elif isinstance(tool_result, dict):
-                if "html" in tool_result and tool_result["html"]:
-                    html_viewer_element = cl.CustomElement(
-                        name="RawHtmlRenderElement",
-                        props={"htmlString": tool_result["html"]}
-                    )
-                    cl.user_session.set("html_viewer_el", html_viewer_element)
-                    await cl.Message(content="", elements=[html_viewer_element]).send()
-
-                if "code" in tool_result and tool_result["code"]:
-                    await cl.Message(
-                        content=f"### 📦 Final Code\n```python\n{tool_result['code']}\n```"
-                    ).send()
-
-                if "text" in tool_result and tool_result["text"]:
-                    await cl.Message(content=f"{tool_result['text']}").send()
-            else:
-                await cl.Message(content=str(tool_result)).send()
-
-        else:
-            try:
-                # Try to parse response as JSON
-                response_json = json.loads(response_text)
-
-                if "status" in response_json:
-                    if response_json["status"] == "completed":
-                        tool_result = response_json["result"]
-
+            if isinstance(tool_result, dict):
+                if "status" in tool_result:
+                    if tool_result["status"] == "completed":
                         # Delegate handling to helper function; if it returns True, we should return from main.
-                        if await _handle_tool_result(tool_result):
+                        if await _handle_tool_result(tool_result["result"]):
                             return
 
-                    if response_json["status"] == "failed":
+                    if tool_result["status"] == "failed":
                         await cl.Message(content="❌ **Job Failed.**").send()
                         return
 
-                    if "logs" in response_json:
-                        await cl.Message(content=response_json["logs"]).send()
+                    if "logs" in tool_result:
+                        await cl.Message(content=tool_result["logs"]).send()
                         return
-                else:
-                    await cl.Message(content=response_text).send()
-            except json.JSONDecodeError:
-                # Fallback to plain text response
-                await cl.Message(content=response_text).send()
+            else:
+                await cl.Message(content=str(tool_result)).send()
+        else:
+            # No job started, just send the response back
+            await cl.Message(content=response_text).send()
 
     except Exception as e:
         logger.exception("Error in main loop")
