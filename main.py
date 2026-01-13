@@ -17,7 +17,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import chainlit as cl
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
-from chainlit.data.storage_clients.base import BaseStorageClient
 from chainlit.types import ThreadDict
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
@@ -202,7 +201,7 @@ def oauth_callback(provider_id: str, token: str, raw_user_data: Dict[str, str], 
 
 @cl.data_layer
 def get_data_layer():
-    return SQLAlchemyDataLayer(conninfo=db_manager.DATABASE_URL, storage_provider=BaseStorageClient)
+    return SQLAlchemyDataLayer(conninfo=db_manager.DATABASE_URL)
 
 async def _handle_tool_result(tool_result) -> bool:
     """
