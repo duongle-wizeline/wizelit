@@ -189,24 +189,8 @@ class Job:
     def status(self, value: str) -> None:
         """Set job status and publish status change event."""
         self._status = value
-        # Publish status change to Redis if streamer is available
-        if self._log_streamer:
-            async def publish_status():
-                try:
-                    await self._log_streamer.publish_status_change(
-                        self._id,
-                        value,
-                        result=self._result,
-                        error=self._error
-                    )
-                except Exception as e:
-                    print(f"Error publishing status change: {e}", flush=True)
-
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(publish_status())
-            except RuntimeError:
-                print(f"Warning: No event loop running, cannot publish status change to Redis", flush=True)
+        # Note: Status changes are published explicitly via publish_status_change_sync()
+        # This setter just updates the internal state
 
     @property
     def result(self) -> Optional[str | dict[str, Any]]:
@@ -227,6 +211,19 @@ class Job:
     def error(self, value: Optional[str]) -> None:
         """Set job error message."""
         self._error = value
+
+    async def publish_status_change_sync(self) -> None:
+        """Publish status change to Redis and wait for it to complete."""
+        if self._log_streamer:
+            try:
+                await self._log_streamer.publish_status_change(
+                    self._id,
+                    self._status,
+                    result=self._result,
+                    error=self._error
+                )
+            except Exception as e:
+                print(f"Error publishing status change: {e}", flush=True)
 
     async def _heartbeat(self, interval_seconds: float = 5.0) -> None:
         """
@@ -262,24 +259,27 @@ class Job:
         import asyncio
 
         async def _runner() -> Any:
-            self._status = "running"
+            self.status = "running"
+            await self.publish_status_change_sync()  # Ensure published
             # Persist initial job state
             await self.persist_to_db()
 
             heartbeat_task = asyncio.create_task(self._heartbeat(heartbeat_interval))
             try:
                 result = await coro
-                # Store string results for convenience
+                # Store string/dict results for convenience
                 if isinstance(result, str|dict):
-                    self._result = result
-                if self._status == "running":
-                    self._status = "completed"
+                    self.result = result
+                if self.status == "running":
+                    self.status = "completed"
+                    await self.publish_status_change_sync()  # Ensure published before returning
                     # Persist completion state
                     await self.persist_to_db()
                 return result
             except Exception as e:  # noqa: BLE001 - we deliberately capture all
-                self._error = str(e)
-                self._status = "failed"
+                self.error = str(e)
+                self.status = "failed"
+                await self.publish_status_change_sync()  # Ensure published before raising
                 # Persist failure state
                 await self.persist_to_db()
                 # Also log the error so it shows up in logs UI
