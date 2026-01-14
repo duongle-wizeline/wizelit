@@ -102,7 +102,7 @@ def _relative_to_root(root: Path, file_path: str, original_input: Optional[str] 
         return file_path
 
 
-@mcp.ingest(description="Scan a directory or GitHub repo for Python files and symbol usages.")
+@mcp.ingest(is_long_running=False, description="Scan a directory or GitHub repo for Python files and symbol usages.")
 async def scan_directory(
     root_directory: str,
     pattern: str = "*.py",
@@ -123,7 +123,7 @@ async def scan_directory(
     return await asyncio.to_thread(_run)
 
 
-@mcp.ingest(description="Find all usages of a symbol in a local path or GitHub repo.")
+@mcp.ingest(is_long_running=False, description="Find all usages of a symbol in a local path or GitHub repo.")
 async def find_symbol(
     root_directory: str,
     symbol_name: str,
@@ -144,7 +144,7 @@ async def find_symbol(
     return await asyncio.to_thread(_run)
 
 
-@mcp.ingest(description="Analyze impact of changing a symbol.")
+@mcp.ingest(is_long_running=False, description="Analyze impact of changing a symbol.")
 async def analyze_impact(
     root_directory: str,
     symbol_name: str,
@@ -163,7 +163,7 @@ async def analyze_impact(
     return await asyncio.to_thread(_run)
 
 
-@mcp.ingest(description="Grep for a pattern across a directory or GitHub repo.")
+@mcp.ingest(is_long_running=False, description="Grep for a pattern across a directory or GitHub repo.")
 async def grep_search(
     root_directory: str,
     pattern: str,
@@ -204,7 +204,7 @@ async def grep_search(
     return await asyncio.to_thread(_run)
 
 
-@mcp.ingest(description="Git blame for a specific line.")
+@mcp.ingest(is_long_running=False, description="Git blame for a specific line.")
 async def git_blame(
     root_directory: str,
     file_path: str,
@@ -221,7 +221,7 @@ async def git_blame(
     return await asyncio.to_thread(_run)
 
 
-@mcp.ingest(description="Build a dependency graph from symbol usages.")
+@mcp.ingest(is_long_running=False, description="Build a dependency graph from symbol usages.")
 async def build_dependency_graph(
     root_directory: str,
     pattern: str = "*.py",
@@ -267,7 +267,7 @@ async def build_dependency_graph(
 # Text-oriented tools matching the previous refactoring-agent behavior
 
 
-@mcp.ingest(description="Analyze symbol usages and impact (formatted text).")
+@mcp.ingest(is_long_running=False, description="Analyze symbol usages and impact (formatted text).")
 async def code_scout_symbol_usage(
     target: str,
     symbol: str,
@@ -329,8 +329,9 @@ async def code_scout_symbol_usage(
     return await asyncio.to_thread(_run)
 
 
-@mcp.ingest(description="Run grep via Code Scout (formatted text).")
+@mcp.ingest(is_long_running=False, description="Run grep via Code Scout (formatted text).")
 async def code_scout_grep(
+    job: Job,
     target: str,
     pattern: str,
     file_pattern: str = "*.py",
