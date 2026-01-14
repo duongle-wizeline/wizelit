@@ -39,7 +39,9 @@ def build_graph(
             if isinstance(message, ToolMessage) and message.name == "get_job_status":
                 return {"messages": [AIMessage(content=message.content[0]["text"])]}
 
-        docs_content = "\n\n".join(_stringify_tool_message(msg) for msg in tool_messages)
+        docs_content = "\n\n".join(
+            _stringify_tool_message(msg) for msg in tool_messages
+        )
 
         # 2. STRICT System Prompt
         system_message_content = (
@@ -92,11 +94,7 @@ def build_graph(
 
     builder.add_edge("generate", END)
 
-    """Convert the graph to a Mermaid string."""
     compiled_graph = builder.compile(checkpointer=memory)
-    compiled_graph_mermaid = compiled_graph.get_graph().draw_mermaid()
-    print(f"\n\n\nCompiled Graph Mermaid: {compiled_graph_mermaid}\n\n\n")
-
     return compiled_graph
 
 
@@ -139,15 +137,10 @@ def _normalize_tool_messages(messages: list) -> list:
             # Create a new ToolMessage with normalized string content
             normalized_msg = ToolMessage(
                 content=string_content,
-                tool_call_id=getattr(message, 'tool_call_id', None),
-                name=getattr(message, 'name', None)
+                tool_call_id=getattr(message, "tool_call_id", None),
+                name=getattr(message, "name", None),
             )
             normalized.append(normalized_msg)
         else:
             normalized.append(message)
     return normalized
-
-async def _graph_to_mermaid(self) -> str:
-    """Convert the graph to a Mermaid string."""
-    computed_graph = await self.get_graph()
-    return computed_graph.get_graph().draw_mermaid()

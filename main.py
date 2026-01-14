@@ -5,7 +5,6 @@ import uuid
 import asyncio
 import time
 import re
-import os
 from typing import Dict, Optional
 
 import chainlit as cl
@@ -23,16 +22,19 @@ logger = logging.getLogger(__name__)
 
 TASK_TIMEOUT = os.getenv("TASK_TIMEOUT", 1200)  # Default to 20 minutes
 
+
 @cl.on_app_startup
 async def on_startup():
     await db_manager.init_db()
     await agent_runtime.ensure_ready()
+
 
 @cl.on_chat_start
 async def on_chat_start():
     session_id = str(uuid.uuid4())
     cl.user_session.set("session_id", session_id)
     await create_chat_settings().send()
+
 
 @cl.on_message
 async def main(message: cl.Message):
@@ -53,14 +55,18 @@ async def main(message: cl.Message):
 
         if job_match:
             job_id = job_match.group(1)
-            await cl.Message(content=f"👨‍✈️ **Captain:** Dispatching Crew... (ID: `{job_id}`)").send()
+            await cl.Message(
+                content=f"👨‍✈️ **Captain:** Dispatching Crew... (ID: `{job_id}`)"
+            ).send()
 
             async with cl.Step(name="Refactoring Crew", type="run") as step:
                 step.input = "Initializing Agent Swarm..."
                 await step.update()
 
                 # Check if streaming is enabled
-                enable_streaming = os.getenv("ENABLE_LOG_STREAMING", "true").lower() == "true"
+                enable_streaming = (
+                    os.getenv("ENABLE_LOG_STREAMING", "true").lower() == "true"
+                )
 
                 if enable_streaming:
                     # Real-time streaming via Redis
@@ -74,7 +80,9 @@ async def main(message: cl.Message):
                         timeout = float(os.getenv("LOG_STREAM_TIMEOUT_SECONDS", "300"))
 
                         try:
-                            async for log_event in log_streamer.subscribe_logs(job_id, timeout=timeout):
+                            async for log_event in log_streamer.subscribe_logs(
+                                job_id, timeout=timeout
+                            ):
                                 # Handle log messages
                                 if "message" in log_event:
                                     ts = log_event.get("timestamp", "")[:8]  # HH:MM:SS
@@ -84,7 +92,9 @@ async def main(message: cl.Message):
                                     accumulated_logs.append(formatted)
 
                                     # Update UI with latest logs
-                                    step.output = "\n".join(accumulated_logs[-25:])  # Show last 25 lines
+                                    step.output = "\n".join(
+                                        accumulated_logs[-25:]
+                                    )  # Show last 25 lines
                                     await step.update()
 
                                 # Handle status changes
@@ -99,11 +109,15 @@ async def main(message: cl.Message):
 
                                     elif status == "failed":
                                         error = log_event.get("error", "Unknown error")
-                                        await cl.Message(content=f"❌ **Job Failed:** {error}").send()
+                                        await cl.Message(
+                                            content=f"❌ **Job Failed:** {error}"
+                                        ).send()
                                         return
 
                         except asyncio.TimeoutError:
-                            await cl.Message(content="⏱️ Job is still running. Check back later.").send()
+                            await cl.Message(
+                                content="⏱️ Job is still running. Check back later."
+                            ).send()
                             return
 
                         finally:
@@ -115,7 +129,9 @@ async def main(message: cl.Message):
 
                     except Exception as e:
                         logger.error(f"Streaming error: {e}", exc_info=True)
-                        await cl.Message(content=f"⚠️ Streaming unavailable, falling back to polling: {e}").send()
+                        await cl.Message(
+                            content=f"⚠️ Streaming unavailable, falling back to polling: {e}"
+                        ).send()
                         enable_streaming = False
 
                 # Fallback to polling if streaming is disabled or failed
@@ -158,15 +174,20 @@ async def on_chat_resume(thread: ThreadDict):
     # even we do nothing in this event.
     pass
 
+
 @cl.oauth_callback
-def oauth_callback(provider_id: str, token: str, raw_user_data: Dict[str, str], default_user: cl.User) -> Optional[cl.User]:
+def oauth_callback(
+    provider_id: str, token: str, raw_user_data: Dict[str, str], default_user: cl.User
+) -> Optional[cl.User]:
     if provider_id == "google" and raw_user_data["hd"] == "wizeline.com":
         return default_user
     return None
 
+
 @cl.data_layer
 def get_data_layer():
     return SQLAlchemyDataLayer(conninfo=db_manager.DATABASE_URL)
+
 
 async def _handle_tool_result(tool_result) -> bool:
     """
@@ -179,7 +200,9 @@ async def _handle_tool_result(tool_result) -> bool:
 
     if isinstance(tool_result, dict):
         if "html" in tool_result and tool_result["html"]:
-            html_viewer_element = cl.CustomElement(name="RawHtmlRenderElement", props={"htmlString": tool_result["html"]})
+            html_viewer_element = cl.CustomElement(
+                name="RawHtmlRenderElement", props={"htmlString": tool_result["html"]}
+            )
             # Store the element if we want to update it server side at a later stage.
             cl.user_session.set("html_viewer_el", html_viewer_element)
             await cl.Message(content="", elements=[html_viewer_element]).send()
@@ -196,11 +219,13 @@ async def _handle_tool_result(tool_result) -> bool:
 
     return False
 
+
 def _extract_response(messages: list[BaseMessage]) -> str:
     for message in reversed(messages):
         if isinstance(message, AIMessage) and message.content:
             return str(message.content)
     return ""
+
 
 async def _polling_for_job(job_id: str, step: cl.Step):
     last_logs = ""
@@ -215,7 +240,9 @@ async def _polling_for_job(job_id: str, step: cl.Step):
 
         # Check for timeout
         if (time.monotonic() - start_time) > timeout:
-            await cl.Message(content=f"⏳ **Timeout:** Job {job_id} takes too long to complete. You may check it status later.").send()
+            await cl.Message(
+                content=f"⏳ **Timeout:** Job {job_id} takes too long to complete. You may check it status later."
+            ).send()
             return
 
         # Call tool via agent_runtime (Reuse existing connection)
@@ -230,7 +257,11 @@ async def _polling_for_job(job_id: str, step: cl.Step):
             job_result = {"error": f"Error polling: {e}"}
 
         # Update UI
-        if "logs" in job_result and job_result["logs"] and job_result["logs"] != last_logs:
+        if (
+            "logs" in job_result
+            and job_result["logs"]
+            and job_result["logs"] != last_logs
+        ):
             step.output = job_result["logs"]
             await step.update()
             last_logs = job_result["logs"]
