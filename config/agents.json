@@ -1,0 +1,14 @@
+{
+  "Code Scout": {
+    "name": "Code Scout",
+    "url": "http://0.0.0.0:1338/sse",
+    "headers": null,
+    "clientType": "sse"
+  },
+  "RefactoringCrewAgent": {
+    "name": "RefactoringCrewAgent",
+    "url": "http://0.0.0.0:1337/sse",
+    "headers": null,
+    "clientType": "sse"
+  }
+}

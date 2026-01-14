@@ -1,11 +1,14 @@
 import json
 import logging
 import os
+import sys
 import uuid
 import asyncio
 import time
 import re
 from typing import Dict, Optional
+from pathlib import Path
+from mcp import ClientSession
 
 import chainlit as cl
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
@@ -20,6 +23,11 @@ from utils import create_chat_settings
 db_manager = DatabaseManager()
 logger = logging.getLogger(__name__)
 
+# Add project root to Python path so imports work
+PROJECT_ROOT = Path(__file__).parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 TASK_TIMEOUT = os.getenv("TASK_TIMEOUT", 1200)  # Default to 20 minutes
 
 
@@ -28,6 +36,36 @@ async def on_startup():
     await db_manager.init_db()
     await agent_runtime.ensure_ready()
 
+@cl.on_mcp_connect
+async def on_mcp(connection, session: ClientSession):
+    # Store connection for later use
+    mcp_servers = cl.user_session.get("mcp_servers", {})
+    mcp_servers[connection.name] = connection.__dict__
+    cl.user_session.set("mcp_servers", mcp_servers)
+    print(f"\n\n✅ [MCP Connects]: {mcp_servers}\n\n", flush=True)
+
+    # Save servers to config file
+    config_dir = PROJECT_ROOT / "config"
+    config_dir.mkdir(exist_ok=True)
+    config_file = config_dir / "agents.json"
+    with open(config_file, "w") as f:
+        json.dump(mcp_servers, f, indent=2)
+
+    # List available tools
+    result = await session.list_tools()
+
+    # Process tool metadata
+    tools = [{
+        "name": t.name,
+        "description": t.description,
+        "input_schema": t.inputSchema,
+    } for t in result.tools]
+
+    # Store tools for later use
+    mcp_tools = cl.user_session.get("mcp_tools", {})
+    mcp_tools[connection.name] = tools
+    cl.user_session.set("mcp_tools", mcp_tools)
+    print(f"\n\n✅ [Session Tools]: {mcp_tools}\n\n", flush=True)
 
 @cl.on_chat_start
 async def on_chat_start():
