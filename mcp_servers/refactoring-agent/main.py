@@ -199,39 +199,25 @@ async def _run_refactoring_crew(job: Job, code: str, instruction: str):
 
 
 @mcp.ingest(
-    description="Submits a Python code snippet to the Engineering Crew for refactoring."
+    is_long_running=True,
 )
-async def start_refactoring_job(code_snippet: str, instruction: str, job: Job):
+async def start_refactoring_job(code_snippet: str, instruction: str, job: Job) -> str:
     """
     Submits a Python code snippet to the Engineering Crew for refactoring.
-
-    With the universal wrapper and the presence of a `job: Job` parameter:
-    - The wrapper automatically detects this is a long-running operation
-    - Wraps this function's coroutine with job.run()
-    - Returns {"mode": "async", "job_id": "JOB-xxx"} immediately
-    - The function runs in the background and stores its result in the job
+    Returns a Job ID immediately (does not wait for completion).
     """
-    # Add a yield point at the very start to ensure we don't execute synchronously
-    await asyncio.sleep(0)
-
     job.logger.info("📨 Job submitted.")
-    # Just execute the work - the wrapper handles job.run() automatically
-    result = await _run_refactoring_crew(job, code_snippet, instruction)
-    # Return the result - wrapper stores it in job.result
-    return result
+    # Run the refactoring crew in the background while Job manages status, result, and heartbeat
+    job.run(_run_refactoring_crew(job, code_snippet, instruction))
+    return job.id
 
 @mcp.ingest()
 async def get_job_status(job_id: str) -> Dict[str, Any]:
     """
-    Checks the status of a refactoring job and returns all logs and the final result.
+    Checks the status of a refactoring job. Returns logs or the final result.
     Falls back to database if job not found in memory.
-
-    Args:
-        job_id: The job identifier
-
-    Returns:
-        Dictionary containing status, all logs, result, and error (if any)
     """
+    # Try in-memory first
     job = mcp.get_job(job_id)
 
     # If not in memory, try database
@@ -240,31 +226,41 @@ async def get_job_status(job_id: str) -> Dict[str, Any]:
         if not job_data:
             return {"error": "Job ID not found."}
 
-        logs = await mcp.get_job_logs_from_db(job_id, limit=1000)
-        all_logs = "\n".join(logs) if logs else "[no logs in database]"
+        # Get logs from database
+        logs = await mcp.get_job_logs_from_db(job_id, limit=100)
+        tail_n = int(os.getenv("JOB_LOG_TAIL", "25"))
+        tail = "\n".join(logs[-tail_n:]) if logs else "[no logs in database]"
 
         return {
             "status": job_data["status"],
-            "logs": all_logs,
+            "logs": tail,
             "result": job_data.get("result"),
             "error": job_data.get("error")
         }
 
-    # Job found in memory - return all logs
+    # Job found in memory - return live data
+    tail_n = int(os.getenv("JOB_LOG_TAIL", "25"))
     logs = mcp.get_job_logs(job_id) or []
-    all_logs = "\n".join(logs) if logs else "[no logs yet]"
+    tail = "\n".join(logs[-tail_n:]) if logs else "[no logs yet]"
 
-    response = {
-        "status": job.status,
-        "logs": all_logs
-    }
-
-    if job.status == "completed":
-        response["result"] = job.result or ""
-    elif job.status == "failed":
-        response["error"] = job.error or "Unknown error"
-
-    return response
+    if job.status == "running":
+        return {
+            "status": "running",
+            "logs": tail
+        }
+    elif job.status == "completed":
+        # Include logs even on completion so callers don't miss the final wrap-up lines.
+        return {
+            "status": "completed",
+            "logs": tail,
+            "result": job.result or ""
+        }
+    else:
+        return {
+            "status": "failed",
+            "logs": tail,
+            "error": job.error or "Unknown error"
+        }
 
 @mcp.ingest()
 async def get_jobs() -> list[Job]:
