@@ -52,8 +52,8 @@ class AgentRuntime:
             with open("config/agents.json") as f:
                 agents_config = json.load(f)
 
-            for agent in agents_config.get("agents", []):
-                await connect_and_load(agent["label"], agent["url"])
+            for agent in agents_config.values():
+                await connect_and_load(agent["name"], agent["url"])
 
             # Bedrock LLM
             region = normalize_aws_env(default_region="us-east-1")

@@ -38,19 +38,6 @@ async def on_startup():
 
 @cl.on_mcp_connect
 async def on_mcp(connection, session: ClientSession):
-    # Store connection for later use
-    mcp_servers = cl.user_session.get("mcp_servers", {})
-    mcp_servers[connection.name] = connection.__dict__
-    cl.user_session.set("mcp_servers", mcp_servers)
-    print(f"\n\n✅ [MCP Connects]: {mcp_servers}\n\n", flush=True)
-
-    # Save servers to config file
-    config_dir = PROJECT_ROOT / "config"
-    config_dir.mkdir(exist_ok=True)
-    config_file = config_dir / "agents.json"
-    with open(config_file, "w") as f:
-        json.dump(mcp_servers, f, indent=2)
-
     # List available tools
     result = await session.list_tools()
 
@@ -65,7 +52,37 @@ async def on_mcp(connection, session: ClientSession):
     mcp_tools = cl.user_session.get("mcp_tools", {})
     mcp_tools[connection.name] = tools
     cl.user_session.set("mcp_tools", mcp_tools)
-    print(f"\n\n✅ [Session Tools]: {mcp_tools}\n\n", flush=True)
+
+    # Load config file and update
+    config_dir = PROJECT_ROOT / "config"
+    config_dir.mkdir(exist_ok=True)
+    config_file = config_dir / "agents.json"
+
+    mcp_servers = {}
+    if config_file.exists():
+        with open(config_file, "r") as f:
+            mcp_servers = json.load(f)
+
+    mcp_servers[connection.name] = connection.__dict__
+    # Save servers to config file
+    with open(config_file, "w") as f:
+        json.dump(mcp_servers, f, indent=2)
+
+@cl.on_mcp_disconnect
+async def on_mcp_disconnect(name: str, session: ClientSession):
+    """Called when an MCP connection is terminated"""
+    # Remove the disconnected server from config
+    config_dir = PROJECT_ROOT / "config"
+    config_file = config_dir / "agents.json"
+
+    if config_file.exists():
+        with open(config_file, "r") as f:
+            mcp_servers = json.load(f)
+
+        if name in mcp_servers:
+            del mcp_servers[name]
+            with open(config_file, "w") as f:
+                json.dump(mcp_servers, f, indent=2)
 
 @cl.on_chat_start
 async def on_chat_start():
