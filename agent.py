@@ -50,11 +50,10 @@ class AgentRuntime:
 
         try:
             with open("config/agents.yaml") as f:
-                agents_config = yaml.safe_load(f) or {}
-                print(f"\n🔍 [Agent] Loaded agents config: {agents_config}\n")
+                mcp_servers = yaml.safe_load(f) or {}
 
-            for agent in agents_config.values():
-                await connect_and_load(agent["name"], agent["url"])
+            for server in mcp_servers.values():
+                await connect_and_load(server["name"], server["url"])
 
             # Bedrock LLM
             region = normalize_aws_env(default_region="us-east-1")

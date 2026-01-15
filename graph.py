@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Iterable, Sequence
 
 from langchain_core.language_models import BaseLanguageModel
@@ -10,6 +11,8 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
+from utils.prompt_guides import prompt_guides
+print(f"\n{prompt_guides}\n")
 
 def build_graph(
     llm: BaseLanguageModel,
@@ -23,10 +26,12 @@ def build_graph(
 
     async def query_or_respond(state: MessagesState):
         """Let the model decide whether it needs to call a tool."""
+        system_message_content = f"{prompt_guides}"
         history = state.get("messages", [])
+        prompt = [SystemMessage(content=system_message_content)] + history
         # Normalize tool messages to fix Bedrock validation issues on subsequent calls
-        normalized_history = _normalize_tool_messages(history)
-        response = await llm_with_tools.ainvoke(normalized_history)
+        normalized_prompt = _normalize_tool_messages(prompt)
+        response = await llm_with_tools.ainvoke(normalized_prompt)
         return {"messages": [response]}
 
     async def generate(state: MessagesState):
@@ -38,6 +43,8 @@ def build_graph(
         for message in tool_messages:
             if isinstance(message, ToolMessage) and message.name == "get_job_status":
                 return {"messages": [AIMessage(content=message.content[0]["text"])]}
+            elif isinstance(message, ToolMessage) and message.name == "start_refactoring_job":
+                return {"messages": [AIMessage(content=f"Refactoring job has started. JOB_ID: {message.content[0]["text"]}.")]}
 
         docs_content = "\n\n".join(
             _stringify_tool_message(msg) for msg in tool_messages
@@ -45,21 +52,11 @@ def build_graph(
 
         # 2. STRICT System Prompt
         system_message_content = (
-            "You are Wizelit, an Engineering Manager with two distinct toolsets:\n\n"
-            "CODE SCOUT (Analysis Only):\n"
-            "- code_scout_symbol_usage: Find where symbols (functions/classes/variables) are defined or used\n"
-            "- code_scout_grep: Fast text search across codebases\n"
-            "Use these for: 'find usages', 'where is X used', 'search for', 'analyze dependencies'\n\n"
-            "REFACTORING CREW (Code Changes Only):\n"
-            "- start_refactoring_job: Modify/refactor code snippets\n"
-            "- get_job_status: Check refactoring job progress\n"
-            "Use these ONLY for: 'refactor this code', 'improve this code', 'rewrite'\n\n"
-            "Rules:\n"
-            "1) For analysis/search requests → Use Code Scout tools and summarize findings.\n"
-            "2) For code modification requests → Use start_refactoring_job and respond ONLY with: 'I have started the job. JOB_ID: <the_id>.'\n"
-            "3) Never write Python code yourself.\n"
+            f"{prompt_guides}"
             f"\n\nCONTEXT FROM TOOLS:\n{docs_content}"
         )
+
+        print(f"\n🧠 [Graph] System Prompt:\n{system_message_content}\n")
 
         conversation_messages = [
             message
@@ -144,3 +141,4 @@ def _normalize_tool_messages(messages: list) -> list:
         else:
             normalized.append(message)
     return normalized
+

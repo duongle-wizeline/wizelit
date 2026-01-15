@@ -19,6 +19,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from agent import agent_runtime
 from database import DatabaseManager
 from utils import create_chat_settings
+from utils.prompt_guides import refresh_prompt_guides
 
 
 db_manager = DatabaseManager()
@@ -56,11 +57,6 @@ async def on_mcp(connection, session: ClientSession):
         "title": t.title,
     } for t in result.tools]
 
-    # Store tools for later use
-    mcp_tools = cl.user_session.get("mcp_tools", {})
-    mcp_tools[connection.name] = tools
-    cl.user_session.set("mcp_tools", mcp_tools)
-
     mcp_servers = {}
     if CONFIG_FILE.exists():
         with open(CONFIG_FILE, "r") as f:
@@ -72,6 +68,7 @@ async def on_mcp(connection, session: ClientSession):
     # Save servers to config file
     with open(CONFIG_FILE, "w") as f:
         yaml.dump(mcp_servers, f, default_flow_style=False)
+    refresh_prompt_guides()
 
 @cl.on_mcp_disconnect
 async def on_mcp_disconnect(name: str, session: ClientSession):
@@ -86,6 +83,7 @@ async def on_mcp_disconnect(name: str, session: ClientSession):
             del mcp_servers[no_spaces_name]
             with open(CONFIG_FILE, "w") as f:
                 yaml.dump(mcp_servers, f, default_flow_style=False)
+            refresh_prompt_guides()
 
 @cl.on_chat_start
 async def on_chat_start():
