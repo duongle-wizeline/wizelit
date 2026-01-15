@@ -280,7 +280,7 @@ async def main(message: cl.Message):
                 if enable_streaming:
                     # Real-time streaming via Redis
                     try:
-                        from core.wizelit_agent_wrapper.streaming import LogStreamer
+                        from wizelit_sdk.agent_wrapper.streaming import LogStreamer
 
                         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
                         log_streamer = LogStreamer(redis_url)

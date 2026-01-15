@@ -62,7 +62,7 @@ async def init_database():
 async def test_redis():
     """Test Redis connection."""
     try:
-        from core.wizelit_agent_wrapper.streaming import LogStreamer
+        from wizelit_sdk.agent_wrapper.streaming import LogStreamer
 
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
         print(f"\n🔄 Testing Redis connection at {redis_url}...")
