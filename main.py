@@ -1,11 +1,15 @@
+import yaml
 import json
 import logging
 import os
+import sys
 import uuid
 import asyncio
 import time
 import re
 from typing import Dict, Optional
+from pathlib import Path
+from mcp import ClientSession
 
 import chainlit as cl
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
@@ -20,6 +24,15 @@ from utils import create_chat_settings
 db_manager = DatabaseManager()
 logger = logging.getLogger(__name__)
 
+# Add project root to Python path so imports work
+PROJECT_ROOT = Path(__file__).parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+CONFIG_DIR = PROJECT_ROOT / "config"
+CONFIG_DIR.mkdir(exist_ok=True)
+CONFIG_FILE = CONFIG_DIR / "agents.yaml"
+
 TASK_TIMEOUT = os.getenv("TASK_TIMEOUT", 1200)  # Default to 20 minutes
 
 
@@ -28,6 +41,46 @@ async def on_startup():
     await db_manager.init_db()
     await agent_runtime.ensure_ready()
 
+@cl.on_mcp_connect
+async def on_mcp(connection, session: ClientSession):
+    # List available tools
+    result = await session.list_tools()
+
+    # Process tool metadata
+    tools = [{
+        "name": t.name,
+        "description": t.description,
+        "input_schema": t.inputSchema,
+    } for t in result.tools]
+
+    # Store tools for later use
+    mcp_tools = cl.user_session.get("mcp_tools", {})
+    mcp_tools[connection.name] = tools
+    cl.user_session.set("mcp_tools", mcp_tools)
+
+    mcp_servers = {}
+    if CONFIG_FILE.exists():
+        with open(CONFIG_FILE, "r") as f:
+            mcp_servers = yaml.safe_load(f) or {}
+
+    mcp_servers[connection.name.replace(" ", "")] = connection.__dict__
+    # Save servers to config file
+    with open(CONFIG_FILE, "w") as f:
+        yaml.dump(mcp_servers, f, default_flow_style=False)
+
+@cl.on_mcp_disconnect
+async def on_mcp_disconnect(name: str, session: ClientSession):
+    """Called when an MCP connection is terminated"""
+    # Remove the disconnected server from config
+    if CONFIG_FILE.exists():
+        with open(CONFIG_FILE, "r") as f:
+            mcp_servers = yaml.safe_load(f)
+
+        no_spaces_name = name.replace(" ", "")
+        if no_spaces_name in mcp_servers:
+            del mcp_servers[no_spaces_name]
+            with open(CONFIG_FILE, "w") as f:
+                yaml.dump(mcp_servers, f, default_flow_style=False)
 
 @cl.on_chat_start
 async def on_chat_start():

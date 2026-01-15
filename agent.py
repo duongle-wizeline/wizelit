@@ -1,5 +1,6 @@
 import os
 from dotenv import load_dotenv
+import yaml
 
 load_dotenv()
 
@@ -48,8 +49,12 @@ class AgentRuntime:
             tools_all.extend(tools)
 
         try:
-            await connect_and_load("Refactoring Agent", "http://127.0.0.1:1337/sse")
-            await connect_and_load("Code Scout", "http://127.0.0.1:1338/sse")
+            with open("config/agents.yaml") as f:
+                agents_config = yaml.safe_load(f) or {}
+                print(f"\n🔍 [Agent] Loaded agents config: {agents_config}\n")
+
+            for agent in agents_config.values():
+                await connect_and_load(agent["name"], agent["url"])
 
             # Bedrock LLM
             region = normalize_aws_env(default_region="us-east-1")
