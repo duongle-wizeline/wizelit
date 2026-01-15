@@ -140,7 +140,7 @@ logo_file_url = "/public/logo_light.png"
 
 # Load assistant avatar image directly from URL.
 # Using logo_light.png as avatar (can be customized to a different image if needed)
-default_avatar_file_url = "/public/logo_light.png"
+default_avatar_file_url = "/public/favicon.png"
 
 # Specify a custom build directory for the frontend.
 # This can be used to customize the frontend code.
