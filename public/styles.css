@@ -1,40 +1,61 @@
+/* Diff viewer styles */
 table.diff {
     font-family: Menlo, Consolas, Monaco, Liberation Mono, Lucida Console, monospace;
-    border:medium
+    border: medium
 }
+
 .diff_header {
-    background-color:#e0e0e0
+    background-color: #e0e0e0
 }
+
 td.diff_header {
-    text-align:right
+    text-align: right
 }
+
 .diff_next {
-    background-color:#c0c0c0
+    background-color: #c0c0c0
 }
+
 .diff_add {
-    background-color:#aaffaa
+    background-color: #aaffaa
 }
+
 .diff_chg {
-    background-color:#ffff77
+    background-color: #ffff77
 }
+
 .diff_sub {
-    background-color:#ffaaaa
+    background-color: #ffaaaa
 }
 
 .dark {
     .diff_header {
-        background-color:gray
+        background-color: gray
     }
+
     .diff_next {
-        background-color:dimgray
+        background-color: dimgray
     }
+
     .diff_add {
-        background-color:green
+        background-color: green
     }
+
     .diff_chg {
-        background-color:goldenrod
+        background-color: goldenrod
     }
+
     .diff_sub {
-        background-color:deeppink
+        background-color: deeppink
     }
 }
+
+/* Optional: Theme-aware logo switching
+ * If you want to use different logos for light/dark themes,
+ * you can uncomment and customize this section.
+ * 
+ * Note: This requires modifying the HTML structure or using
+ * Chainlit's custom build feature, which may not be directly
+ * supported. For now, using a single logo that works in both
+ * themes is the recommended approach.
+ */
