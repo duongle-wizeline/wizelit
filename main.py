@@ -1,3 +1,4 @@
+import yaml
 import json
 import logging
 import os
@@ -28,6 +29,10 @@ PROJECT_ROOT = Path(__file__).parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+CONFIG_DIR = PROJECT_ROOT / "config"
+CONFIG_DIR.mkdir(exist_ok=True)
+CONFIG_FILE = CONFIG_DIR / "agents.yaml"
+
 TASK_TIMEOUT = os.getenv("TASK_TIMEOUT", 1200)  # Default to 20 minutes
 
 
@@ -53,36 +58,29 @@ async def on_mcp(connection, session: ClientSession):
     mcp_tools[connection.name] = tools
     cl.user_session.set("mcp_tools", mcp_tools)
 
-    # Load config file and update
-    config_dir = PROJECT_ROOT / "config"
-    config_dir.mkdir(exist_ok=True)
-    config_file = config_dir / "agents.json"
-
     mcp_servers = {}
-    if config_file.exists():
-        with open(config_file, "r") as f:
-            mcp_servers = json.load(f)
+    if CONFIG_FILE.exists():
+        with open(CONFIG_FILE, "r") as f:
+            mcp_servers = yaml.safe_load(f) or {}
 
-    mcp_servers[connection.name] = connection.__dict__
+    mcp_servers[connection.name.replace(" ", "")] = connection.__dict__
     # Save servers to config file
-    with open(config_file, "w") as f:
-        json.dump(mcp_servers, f, indent=2)
+    with open(CONFIG_FILE, "w") as f:
+        yaml.dump(mcp_servers, f, default_flow_style=False)
 
 @cl.on_mcp_disconnect
 async def on_mcp_disconnect(name: str, session: ClientSession):
     """Called when an MCP connection is terminated"""
     # Remove the disconnected server from config
-    config_dir = PROJECT_ROOT / "config"
-    config_file = config_dir / "agents.json"
+    if CONFIG_FILE.exists():
+        with open(CONFIG_FILE, "r") as f:
+            mcp_servers = yaml.safe_load(f)
 
-    if config_file.exists():
-        with open(config_file, "r") as f:
-            mcp_servers = json.load(f)
-
-        if name in mcp_servers:
-            del mcp_servers[name]
-            with open(config_file, "w") as f:
-                json.dump(mcp_servers, f, indent=2)
+        no_spaces_name = name.replace(" ", "")
+        if no_spaces_name in mcp_servers:
+            del mcp_servers[no_spaces_name]
+            with open(CONFIG_FILE, "w") as f:
+                yaml.dump(mcp_servers, f, default_flow_style=False)
 
 @cl.on_chat_start
 async def on_chat_start():

@@ -1,6 +1,6 @@
-import json
 import os
 from dotenv import load_dotenv
+import yaml
 
 load_dotenv()
 
@@ -49,8 +49,9 @@ class AgentRuntime:
             tools_all.extend(tools)
 
         try:
-            with open("config/agents.json") as f:
-                agents_config = json.load(f)
+            with open("config/agents.yaml") as f:
+                agents_config = yaml.safe_load(f) or {}
+                print(f"\n🔍 [Agent] Loaded agents config: {agents_config}\n")
 
             for agent in agents_config.values():
                 await connect_and_load(agent["name"], agent["url"])
