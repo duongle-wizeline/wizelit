@@ -51,6 +51,9 @@ async def on_mcp(connection, session: ClientSession):
         "name": t.name,
         "description": t.description,
         "input_schema": t.inputSchema,
+        "output_schema": t.outputSchema,
+        "meta": t.meta,
+        "title": t.title,
     } for t in result.tools]
 
     # Store tools for later use
@@ -63,7 +66,9 @@ async def on_mcp(connection, session: ClientSession):
         with open(CONFIG_FILE, "r") as f:
             mcp_servers = yaml.safe_load(f) or {}
 
-    mcp_servers[connection.name.replace(" ", "")] = connection.__dict__
+    new_connection = connection.__dict__
+    new_connection["tools"] = tools
+    mcp_servers[connection.name.replace(" ", "")] = new_connection
     # Save servers to config file
     with open(CONFIG_FILE, "w") as f:
         yaml.dump(mcp_servers, f, default_flow_style=False)
