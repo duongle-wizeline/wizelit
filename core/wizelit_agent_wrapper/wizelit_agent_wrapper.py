@@ -91,6 +91,7 @@ class WizelitAgentWrapper:
         self,
         is_long_running: bool = False,
         description: Optional[str] = None,
+        response_handling: Optional[Dict[str, Any]] = None,
     ):
         """
         Decorator to convert a function into an MCP tool.
@@ -98,11 +99,30 @@ class WizelitAgentWrapper:
         Args:
             is_long_running: If True, enables progress reporting
             description: Human-readable description of the tool
+            response_handling: Optional dict configuring how tool responses are handled:
+                {
+                    "mode": "direct" | "formatted" | "default",
+                    "extract_path": "content[0].text",  # Optional: path to extract value
+                    "template": "Message: {value}",  # Optional: template for formatted mode
+                    "content_type": "text" | "json" | "auto"
+                }
+                - "direct": Return response directly to user (bypass LLM)
+                - "formatted": Format response using template
+                - "default": Normal LLM processing (default)
 
         Usage:
-            @agent.ingest(is_long_running=True, description="Forecasts revenue")
-            def forecast_revenue(region: str) -> str:
-                return "Revenue projection: $5M"
+            @agent.ingest(
+                is_long_running=True,
+                description="Start a job",
+                response_handling={
+                    "mode": "formatted",
+                    "extract_path": "content[0].text",
+                    "template": "Job started. ID: {value}",
+                    "content_type": "text"
+                }
+            )
+            def start_job(code: str, job: Job) -> str:
+                return job.id
         """
         def decorator(func: Callable) -> Callable:
             # Store original function metadata
@@ -218,7 +238,18 @@ class WizelitAgentWrapper:
             exclude_args = ['ctx']
             if has_job_param:
                 exclude_args.append('job')
-            registered_tool = self._mcp.tool(description=tool_description, exclude_args=exclude_args)(tool_wrapper)
+            
+            # Prepare tool kwargs
+            tool_kwargs = {
+                'description': tool_description,
+                'exclude_args': exclude_args,
+            }
+            
+            # Add response_handling metadata to tool's meta field (exposed via MCP protocol)
+            if response_handling:
+                tool_kwargs['meta'] = {"wizelit_response_handling": response_handling}
+            
+            registered_tool = self._mcp.tool(**tool_kwargs)(tool_wrapper)
 
             # Store tool metadata
             self._tools[tool_name] = {
@@ -293,8 +324,9 @@ class WizelitAgentWrapper:
                 return result
 
             except Exception as e:
-                # Mark job as failed
-                job.status = "failed"
+                # Mark job as failed (only if job exists)
+                if job is not None:
+                    job.status = "failed"
 
                 # Stream error information
                 await ctx.report_progress(

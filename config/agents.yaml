@@ -1,7 +1,7 @@
-CodeScout:
+CodeScoutAgent:
   clientType: sse
   headers: null
-  name: Code Scout
+  name: CodeScoutAgent
   tools:
   - description: Scan a directory or GitHub repo for Python files and symbol usages.
     input_schema:
@@ -147,7 +147,9 @@ CodeScout:
     name: build_dependency_graph
     output_schema: null
     title: null
-  - description: Analyze symbol usages and impact (formatted text).
+  - description: Find symbol usages and analyze impact. Returns formatted human-readable
+      text. Use this tool when user asks to find/search for symbol usage, function
+      definitions, or code references.
     input_schema:
       properties:
         file_pattern:
@@ -175,10 +177,17 @@ CodeScout:
     meta:
       _fastmcp:
         tags: []
+      wizelit_response_handling: &id001
+        content_type: text
+        extract_path: content[0].text
+        mode: direct
     name: code_scout_symbol_usage
     output_schema: null
+    response_handling: *id001
     title: null
-  - description: Run grep via Code Scout (formatted text).
+  - description: Search for text patterns in code. Returns formatted human-readable
+      text. Use this tool when user asks to search/find/grep for text patterns, function
+      names, or code snippets.
     input_schema:
       properties:
         file_pattern:
@@ -203,18 +212,22 @@ CodeScout:
     meta:
       _fastmcp:
         tags: []
+      wizelit_response_handling: &id002
+        content_type: text
+        extract_path: content[0].text
+        mode: direct
     name: code_scout_grep
     output_schema: null
+    response_handling: *id002
     title: null
   url: http://0.0.0.0:1338/sse
 RefactoringCrewAgent:
   clientType: sse
   headers: null
-  name: Refactoring Crew Agent
+  name: RefactoringCrewAgent
   tools:
-  - description: "\n    Submits a Python code snippet to the Engineering Crew for\
-      \ refactoring.\n    Returns a Job ID immediately (does not wait for completion).\n\
-      \    "
+  - description: Submits a Python code snippet to the Engineering Crew for refactoring.
+      Returns a Job ID immediately (does not wait for completion).
     input_schema:
       properties:
         code_snippet:
@@ -228,6 +241,11 @@ RefactoringCrewAgent:
     meta:
       _fastmcp:
         tags: []
+      wizelit_response_handling: &id003
+        content_type: text
+        extract_path: content[0].text
+        mode: formatted
+        template: 'Refactoring job has started. JOB_ID: {value}.'
     name: start_refactoring_job
     output_schema:
       properties:
@@ -237,10 +255,10 @@ RefactoringCrewAgent:
       - result
       type: object
       x-fastmcp-wrap-result: true
+    response_handling: *id003
     title: null
-  - description: "\n    Checks the status of a refactoring job. Returns logs or the\
-      \ final result.\n    Falls back to database if job not found in memory.\n  \
-      \  "
+  - description: Checks the status of a refactoring job. Returns logs or the final
+      result. Falls back to database if job not found in memory.
     input_schema:
       properties:
         job_id:
@@ -251,10 +269,15 @@ RefactoringCrewAgent:
     meta:
       _fastmcp:
         tags: []
+      wizelit_response_handling: &id004
+        content_type: text
+        extract_path: content[0].text
+        mode: direct
     name: get_job_status
     output_schema:
       additionalProperties: true
       type: object
+    response_handling: *id004
     title: null
   - description: "\n    Checks the status of a refactoring job. Returns logs or the\
       \ final result.\n    "

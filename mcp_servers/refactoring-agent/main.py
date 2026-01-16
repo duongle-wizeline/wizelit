@@ -200,6 +200,13 @@ async def _run_refactoring_crew(job: Job, code: str, instruction: str):
 
 @mcp.ingest(
     is_long_running=True,
+    description="Submits a Python code snippet to the Engineering Crew for refactoring. Returns a Job ID immediately (does not wait for completion).",
+    response_handling={
+        "mode": "formatted",
+        "extract_path": "content[0].text",
+        "template": "Refactoring job has started. JOB_ID: {value}.",
+        "content_type": "text"
+    }
 )
 async def start_refactoring_job(code_snippet: str, instruction: str, job: Job) -> str:
     """
@@ -211,7 +218,14 @@ async def start_refactoring_job(code_snippet: str, instruction: str, job: Job) -
     job.run(_run_refactoring_crew(job, code_snippet, instruction))
     return job.id
 
-@mcp.ingest()
+@mcp.ingest(
+    description="Checks the status of a refactoring job. Returns logs or the final result. Falls back to database if job not found in memory.",
+    response_handling={
+        "mode": "direct",
+        "extract_path": "content[0].text",
+        "content_type": "text"
+    }
+)
 async def get_job_status(job_id: str) -> Dict[str, Any]:
     """
     Checks the status of a refactoring job. Returns logs or the final result.

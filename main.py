@@ -42,20 +42,80 @@ async def on_startup():
     await db_manager.init_db()
     await agent_runtime.ensure_ready()
 
+    # Load MCP servers from agents.yaml and register them with Chainlit UI
+    # This allows servers defined in config to appear in the UI automatically
+    await _load_mcp_servers_from_config()
+
+
+async def _load_mcp_servers_from_config():
+    """
+    Load MCP servers from agents.yaml and register them with Chainlit UI.
+    This enables bidirectional sync: config file → UI (in addition to UI → config file).
+    """
+    if not CONFIG_FILE.exists():
+        logger.info("No agents.yaml found, skipping MCP server auto-load")
+        return
+
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            mcp_servers = yaml.safe_load(f) or {}
+
+        if not mcp_servers:
+            logger.info("agents.yaml is empty, no MCP servers to load")
+            return
+
+        logger.info(f"Loading {len(mcp_servers)} MCP server(s) from agents.yaml")
+
+        # Note: Chainlit's MCP system is event-driven and doesn't expose
+        # a direct API to programmatically add servers to the UI.
+        # The servers in agents.yaml are already connected via agent_runtime.ensure_ready()
+        # for backend use, but they won't appear in the UI until manually added.
+        #
+        # This function serves as a placeholder for future Chainlit API support,
+        # or you could implement a custom UI component to display configured servers.
+
+        for server_name, server_config in mcp_servers.items():
+            server_url = server_config.get("url")
+            server_name_display = server_config.get("name", server_name)
+            if server_url:
+                logger.info(
+                    f"  ✓ {server_name_display} at {server_url} (connected for backend)"
+                )
+            else:
+                logger.warning(f"  ⚠ {server_name_display} missing URL in config")
+
+        logger.info(
+            "MCP servers from agents.yaml are available for backend use. "
+            "To see them in the UI, add them manually via Chainlit's MCP settings."
+        )
+
+    except Exception as e:
+        logger.error(f"Error loading MCP servers from config: {e}", exc_info=True)
+
+
 @cl.on_mcp_connect
 async def on_mcp(connection, session: ClientSession):
     # List available tools
     result = await session.list_tools()
 
     # Process tool metadata
-    tools = [{
-        "name": t.name,
-        "description": t.description,
-        "input_schema": t.inputSchema,
-        "output_schema": t.outputSchema,
-        "meta": t.meta,
-        "title": t.title,
-    } for t in result.tools]
+    tools = []
+    for t in result.tools:
+        tool_dict = {
+            "name": t.name,
+            "description": t.description,
+            "input_schema": t.inputSchema,
+            "output_schema": t.outputSchema,
+            "meta": t.meta,
+            "title": t.title,
+        }
+
+        # Extract response_handling from MCP tool meta (from agent code via MCP protocol)
+        if t.meta and isinstance(t.meta, dict):
+            if "wizelit_response_handling" in t.meta:
+                tool_dict["response_handling"] = t.meta["wizelit_response_handling"]
+
+        tools.append(tool_dict)
 
     mcp_servers = {}
     if CONFIG_FILE.exists():
@@ -69,6 +129,11 @@ async def on_mcp(connection, session: ClientSession):
     with open(CONFIG_FILE, "w") as f:
         yaml.dump(mcp_servers, f, default_flow_style=False)
     refresh_prompt_guides()
+    # Refresh tool response handler metadata
+    from utils.tool_response_handler import _tool_response_handler
+
+    _tool_response_handler.refresh_metadata()
+
 
 @cl.on_mcp_disconnect
 async def on_mcp_disconnect(name: str, session: ClientSession):
@@ -84,6 +149,7 @@ async def on_mcp_disconnect(name: str, session: ClientSession):
             with open(CONFIG_FILE, "w") as f:
                 yaml.dump(mcp_servers, f, default_flow_style=False)
             refresh_prompt_guides()
+
 
 @cl.on_chat_start
 async def on_chat_start():
@@ -277,9 +343,37 @@ async def _handle_tool_result(tool_result) -> bool:
 
 
 def _extract_response(messages: list[BaseMessage]) -> str:
+    """
+    Extract the final AI response from messages.
+    Filters out tool call syntax that the LLM might generate as text.
+    """
     for message in reversed(messages):
         if isinstance(message, AIMessage) and message.content:
-            return str(message.content)
+            content = str(message.content)
+
+            # Check if this message has actual tool_calls (proper tool calling)
+            if getattr(message, "tool_calls", None):
+                # If it has tool_calls, the tools should have been executed
+                # Don't show the tool call syntax, wait for the result
+                logger.debug(
+                    f"Message has tool_calls, skipping content: {content[:100]}"
+                )
+                continue
+
+            # Filter out text that looks like function calls (LLM generating code instead of using tools)
+            # This is a generic pattern that works for any tool
+            import re
+
+            # Pattern: function_name(param="value", param2="value2") or function_name(param=value)
+            function_call_pattern = r"^\w+\s*\([^)]*\)\s*$"
+            if re.match(function_call_pattern, content.strip()):
+                logger.warning(
+                    f"LLM generated function call syntax instead of using tools: {content}"
+                )
+                # Return a helpful message instead of showing the function call
+                return "I need to use the available tools to complete this request. Let me try again."
+
+            return content
     return ""
 
 

@@ -32,6 +32,7 @@ def _init_scout(root_directory: str, github_token: Optional[str]) -> CodeScout:
 def _convert_usage_paths(usages: list, scout: CodeScout) -> list:
     """Convert cached file paths in usage objects back to GitHub URLs when applicable."""
     from code_scout.github_helper import GitHubHelper
+
     parsed = None
 
     if scout.original_input and "github.com" in scout.original_input.lower():
@@ -41,7 +42,7 @@ def _convert_usage_paths(usages: list, scout: CodeScout) -> list:
     converted = []
 
     for usage in usages:
-        usage_dict = asdict(usage) if hasattr(usage, '__dataclass_fields__') else usage
+        usage_dict = asdict(usage) if hasattr(usage, "__dataclass_fields__") else usage
         if isinstance(usage_dict, dict) and "file_path" in usage_dict:
             try:
                 file_path_obj = Path(usage_dict["file_path"]).resolve()
@@ -55,7 +56,9 @@ def _convert_usage_paths(usages: list, scout: CodeScout) -> list:
                     owner = parsed.get("owner")
                     repo = parsed.get("repo")
                     ref = parsed.get("ref", "main")
-                    usage_dict["file_path"] = f"https://github.com/{owner}/{repo}/blob/{ref}/{rel_path}"
+                    usage_dict["file_path"] = (
+                        f"https://github.com/{owner}/{repo}/blob/{ref}/{rel_path}"
+                    )
                 else:
                     # For local paths, keep the relative path
                     usage_dict["file_path"] = rel_path
@@ -66,7 +69,9 @@ def _convert_usage_paths(usages: list, scout: CodeScout) -> list:
     return converted
 
 
-def _relative_to_root(root: Path, file_path: str, original_input: Optional[str] = None) -> str:
+def _relative_to_root(
+    root: Path, file_path: str, original_input: Optional[str] = None
+) -> str:
     """Convert absolute paths to paths relative to the scan root when possible.
 
     If original_input is a GitHub URL, convert file paths to GitHub file URLs.
@@ -78,6 +83,7 @@ def _relative_to_root(root: Path, file_path: str, original_input: Optional[str] 
         # If this is a GitHub repository, convert to GitHub URL format
         if original_input and "github.com" in original_input.lower():
             from code_scout.github_helper import GitHubHelper
+
             parsed = GitHubHelper.parse_github_url(original_input)
             if parsed:
                 # Get relative path from root
@@ -102,7 +108,10 @@ def _relative_to_root(root: Path, file_path: str, original_input: Optional[str] 
         return file_path
 
 
-@mcp.ingest(is_long_running=False, description="Scan a directory or GitHub repo for Python files and symbol usages.")
+@mcp.ingest(
+    is_long_running=False,
+    description="Scan a directory or GitHub repo for Python files and symbol usages.",
+)
 async def scan_directory(
     root_directory: str,
     pattern: str = "*.py",
@@ -123,7 +132,10 @@ async def scan_directory(
     return await asyncio.to_thread(_run)
 
 
-@mcp.ingest(is_long_running=False, description="Find all usages of a symbol in a local path or GitHub repo.")
+@mcp.ingest(
+    is_long_running=False,
+    description="Find all usages of a symbol in a local path or GitHub repo.",
+)
 async def find_symbol(
     root_directory: str,
     symbol_name: str,
@@ -163,7 +175,10 @@ async def analyze_impact(
     return await asyncio.to_thread(_run)
 
 
-@mcp.ingest(is_long_running=False, description="Grep for a pattern across a directory or GitHub repo.")
+@mcp.ingest(
+    is_long_running=False,
+    description="Grep for a pattern across a directory or GitHub repo.",
+)
 async def grep_search(
     root_directory: str,
     pattern: str,
@@ -178,6 +193,7 @@ async def grep_search(
             # Convert file paths in matches if it's a GitHub repo
             if scout.original_input and "github.com" in scout.original_input.lower():
                 from code_scout.github_helper import GitHubHelper
+
                 parsed = GitHubHelper.parse_github_url(scout.original_input)
                 if parsed:
                     owner = parsed.get("owner")
@@ -193,7 +209,9 @@ async def grep_search(
                                     rel_path = str(file_path_obj.relative_to(root_path))
                                 else:
                                     rel_path = str(file_path_obj)
-                                match["file"] = f"https://github.com/{owner}/{repo}/blob/{ref}/{rel_path}"
+                                match["file"] = (
+                                    f"https://github.com/{owner}/{repo}/blob/{ref}/{rel_path}"
+                                )
                             except Exception:
                                 pass
 
@@ -221,7 +239,9 @@ async def git_blame(
     return await asyncio.to_thread(_run)
 
 
-@mcp.ingest(is_long_running=False, description="Build a dependency graph from symbol usages.")
+@mcp.ingest(
+    is_long_running=False, description="Build a dependency graph from symbol usages."
+)
 async def build_dependency_graph(
     root_directory: str,
     pattern: str = "*.py",
@@ -238,8 +258,12 @@ async def build_dependency_graph(
             result = {}
             for symbol, node in graph.items():
                 node_dict = asdict(node)
-                if scout.original_input and "github.com" in scout.original_input.lower():
+                if (
+                    scout.original_input
+                    and "github.com" in scout.original_input.lower()
+                ):
                     from code_scout.github_helper import GitHubHelper
+
                     parsed = GitHubHelper.parse_github_url(scout.original_input)
                     if parsed and "file_path" in node_dict:
                         owner = parsed.get("owner")
@@ -252,7 +276,9 @@ async def build_dependency_graph(
                                 rel_path = str(file_path_obj.relative_to(root_path))
                             else:
                                 rel_path = str(file_path_obj)
-                            node_dict["file_path"] = f"https://github.com/{owner}/{repo}/blob/{ref}/{rel_path}"
+                            node_dict["file_path"] = (
+                                f"https://github.com/{owner}/{repo}/blob/{ref}/{rel_path}"
+                            )
                         except Exception:
                             pass
                 result[symbol] = node_dict
@@ -267,7 +293,15 @@ async def build_dependency_graph(
 # Text-oriented tools matching the previous refactoring-agent behavior
 
 
-@mcp.ingest(is_long_running=False, description="Analyze symbol usages and impact (formatted text).")
+@mcp.ingest(
+    is_long_running=False,
+    description="Find symbol usages and analyze impact. Returns formatted human-readable text. Use this tool when user asks to find/search for symbol usage, function definitions, or code references.",
+    response_handling={
+        "mode": "direct",
+        "extract_path": "content[0].text",
+        "content_type": "text",
+    },
+)
 async def code_scout_symbol_usage(
     target: str,
     symbol: str,
@@ -298,10 +332,7 @@ async def code_scout_symbol_usage(
             if breakdown:
                 lines.append(
                     "Breakdown: "
-                    + ", ".join(
-                        f"{key}={value}"
-                        for key, value in breakdown.items()
-                    )
+                    + ", ".join(f"{key}={value}" for key, value in breakdown.items())
                 )
 
             if include_graph:
@@ -314,7 +345,9 @@ async def code_scout_symbol_usage(
 
             lines.append("Top matches:")
             for usage in usages[:max_results]:
-                rel_path = _relative_to_root(root_path, usage.file_path, scout.original_input)
+                rel_path = _relative_to_root(
+                    root_path, usage.file_path, scout.original_input
+                )
                 lines.append(
                     f"- {rel_path}:{usage.line_number} [{usage.usage_type}] {usage.context}"
                 )
@@ -329,7 +362,15 @@ async def code_scout_symbol_usage(
     return await asyncio.to_thread(_run)
 
 
-@mcp.ingest(is_long_running=False, description="Run grep via Code Scout (formatted text).")
+@mcp.ingest(
+    is_long_running=False,
+    description="Search for text patterns in code. Returns formatted human-readable text. Use this tool when user asks to search/find/grep for text patterns, function names, or code snippets.",
+    response_handling={
+        "mode": "direct",
+        "extract_path": "content[0].text",
+        "content_type": "text",
+    },
+)
 async def code_scout_grep(
     job: Job,
     target: str,
@@ -349,7 +390,11 @@ async def code_scout_grep(
             lines = [f"Grep results for '{pattern}'", f"Target: {target}", "Matches:"]
 
             for match in matches[:max_results]:
-                rel_path = _relative_to_root(root_path, match.get("file", match.get("path", "?")), scout.original_input)
+                rel_path = _relative_to_root(
+                    root_path,
+                    match.get("file", match.get("path", "?")),
+                    scout.original_input,
+                )
                 lines.append(
                     f"- {rel_path}:{match.get('line_number')} {match.get('content')}"
                 )
