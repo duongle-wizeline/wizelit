@@ -42,56 +42,6 @@ async def on_startup():
     await db_manager.init_db()
     await agent_runtime.ensure_ready()
 
-    # Load MCP servers from agents.yaml and register them with Chainlit UI
-    # This allows servers defined in config to appear in the UI automatically
-    await _load_mcp_servers_from_config()
-
-
-async def _load_mcp_servers_from_config():
-    """
-    Load MCP servers from agents.yaml and register them with Chainlit UI.
-    This enables bidirectional sync: config file → UI (in addition to UI → config file).
-    """
-    if not CONFIG_FILE.exists():
-        logger.info("No agents.yaml found, skipping MCP server auto-load")
-        return
-
-    try:
-        with open(CONFIG_FILE, "r") as f:
-            mcp_servers = yaml.safe_load(f) or {}
-
-        if not mcp_servers:
-            logger.info("agents.yaml is empty, no MCP servers to load")
-            return
-
-        logger.info(f"Loading {len(mcp_servers)} MCP server(s) from agents.yaml")
-
-        # Note: Chainlit's MCP system is event-driven and doesn't expose
-        # a direct API to programmatically add servers to the UI.
-        # The servers in agents.yaml are already connected via agent_runtime.ensure_ready()
-        # for backend use, but they won't appear in the UI until manually added.
-        #
-        # This function serves as a placeholder for future Chainlit API support,
-        # or you could implement a custom UI component to display configured servers.
-
-        for server_name, server_config in mcp_servers.items():
-            server_url = server_config.get("url")
-            server_name_display = server_config.get("name", server_name)
-            if server_url:
-                logger.info(
-                    f"  ✓ {server_name_display} at {server_url} (connected for backend)"
-                )
-            else:
-                logger.warning(f"  ⚠ {server_name_display} missing URL in config")
-
-        logger.info(
-            "MCP servers from agents.yaml are available for backend use. "
-            "To see them in the UI, add them manually via Chainlit's MCP settings."
-        )
-
-    except Exception as e:
-        logger.error(f"Error loading MCP servers from config: {e}", exc_info=True)
-
 
 @cl.on_mcp_connect
 async def on_mcp(connection, session: ClientSession):
