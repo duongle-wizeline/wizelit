@@ -6,8 +6,8 @@ import contextlib
 from typing import Dict, Any
 from utils.bedrock_config import normalize_aws_env, resolve_bedrock_model_id
 
-# FastMCP
-from core.wizelit_agent_wrapper import WizelitAgentWrapper, Job
+# FastMCP - use published SDK
+from wizelit_sdk.agent_wrapper import WizelitAgentWrapper, Job
 
 # Database (optional - for persistence)
 try:
