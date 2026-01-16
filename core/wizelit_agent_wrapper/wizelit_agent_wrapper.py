@@ -297,8 +297,18 @@ class WizelitAgentWrapper:
             try:
                 # Add job to kwargs if function signature includes it
                 func_sig = inspect.signature(func)
-                if 'job' in func_sig.parameters and job is not None:
-                    kwargs['job'] = job
+                if 'job' in func_sig.parameters:
+                    # For non-long-running tools, create a minimal job if needed
+                    if job is None and not is_long_running:
+                        # Create a lightweight job for non-long-running tools that require it
+                        job = Job(
+                            ctx,
+                            db_manager=self._db_manager,
+                            log_streamer=self._log_streamer
+                        )
+                        # Don't persist to DB for fast tools, just create in memory
+                    if job is not None:
+                        kwargs['job'] = job
 
                 # Execute function (async or sync)
                 logging.info(f"kwargs: {kwargs}")

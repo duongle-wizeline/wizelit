@@ -131,13 +131,20 @@ def build_graph(
         # 2. Check for tools that need direct handling (metadata-driven)
         for message in tool_messages:
             if isinstance(message, ToolMessage):
-                if handler.should_handle_directly(message.name):
+                tool_name = message.name
+                should_handle = handler.should_handle_directly(tool_name)
+                print(f"🔍 [Graph] Tool: {tool_name}, should_handle_directly: {should_handle}")
+                if should_handle:
+                    print(f"🔧 [Graph] Handling {tool_name} directly (metadata-driven)")
                     response = handler.handle_tool_response(message)
                     if response:
+                        print(f"✅ [Graph] Direct response for {tool_name}: {str(response.content)[:200]}")
                         # Return the direct response as a new AIMessage
                         # Keep the full message history (including tool_use/tool_result pairs)
                         # to maintain Bedrock's required message structure
                         return {"messages": [response]}
+                    else:
+                        print(f"⚠️ [Graph] Handler returned None for {tool_name}, falling back to LLM processing")
 
         docs_content = "\n\n".join(
             _stringify_tool_message(msg) for msg in tool_messages
