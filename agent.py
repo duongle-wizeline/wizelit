@@ -15,6 +15,9 @@ from graph import build_graph
 from utils.bedrock_config import normalize_aws_env, resolve_bedrock_model_id
 from utils.mcp_storage import get_mcp_servers
 
+# Lock to prevent concurrent graph rebuilds
+_rebuild_lock = asyncio.Lock()
+
 # Suppress non-critical async generator cleanup warnings
 # These occur when async generators are being closed and don't affect functionality
 warnings.filterwarnings("ignore", message=".*async generator ignored GeneratorExit.*")
@@ -186,6 +189,12 @@ class AgentRuntime:
 
     async def rebuild_graph(self):
         """Public method to force graph rebuild (e.g., after MCP servers are added/removed)"""
+        # Use lock to prevent concurrent rebuilds
+        async with _rebuild_lock:
+            await self._do_rebuild_graph()
+
+    async def _do_rebuild_graph(self):
+        """Internal method that performs the actual rebuild"""
         # Close existing MCP connections if any (but not database connections)
         if self._graph is not None:
             # Store old exit stack and sessions
@@ -265,7 +274,26 @@ class AgentRuntime:
         session = self._tool_sessions.get(name)
         if not session:
             raise ValueError(f"Tool '{name}' is not registered in any session")
-        return await session.call_tool(name, arguments)
+
+        # Check if session is still valid before calling
+        # If connection was closed, we need to rebuild the graph
+        try:
+            return await session.call_tool(name, arguments)
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "closedresourceerror" in error_msg or "closed" in error_msg:
+                # Connection was closed, rebuild graph and retry
+                print(
+                    f"⚠️ [Agent] Connection closed for tool '{name}'. Rebuilding graph..."
+                )
+                await self.rebuild_graph()
+                # Get the new session
+                session = self._tool_sessions.get(name)
+                if not session:
+                    raise ValueError(f"Tool '{name}' is not available after rebuild")
+                return await session.call_tool(name, arguments)
+            else:
+                raise
 
 
 agent_runtime = AgentRuntime()

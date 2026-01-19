@@ -97,11 +97,25 @@ async def on_mcp(connection, session: ClientSession):
 
     # CRITICAL: Rebuild the graph so it includes the newly added tools
     # The graph is cached and won't automatically pick up new tools
+    # Add a small delay to let Chainlit finish its session setup before rebuilding
     logger.info(
-        f"🔄 [Main] Rebuilding graph to include new tools from '{connection.name}'..."
+        f"🔄 [Main] Scheduling graph rebuild to include new tools from '{connection.name}'..."
     )
-    await agent_runtime.rebuild_graph()
-    logger.info(f"✅ [Main] Graph rebuilt. MCP server '{connection.name}' connected.")
+
+    # Use asyncio.create_task to run rebuild in background after a short delay
+    # This allows Chainlit to complete its session setup without blocking
+    async def delayed_rebuild():
+        try:
+            # Wait a bit to let Chainlit finish its session operations
+            await asyncio.sleep(0.5)
+            await agent_runtime.rebuild_graph()
+            logger.info(f"✅ [Main] Graph rebuilt for '{connection.name}'.")
+        except Exception as rebuild_error:
+            logger.error(f"❌ [Main] Error rebuilding graph: {rebuild_error}")
+
+    # Store task reference to prevent garbage collection
+    task = asyncio.create_task(delayed_rebuild())
+    # Don't await - let it run in background
 
 
 @cl.on_mcp_disconnect
@@ -118,9 +132,21 @@ async def on_mcp_disconnect(name: str, session: ClientSession):
     _tool_response_handler.refresh_metadata()
 
     # CRITICAL: Rebuild the graph after removing tools
-    logger.info(f"🔄 [Main] Rebuilding graph after removing '{name}'...")
-    await agent_runtime.rebuild_graph()
-    logger.info(f"✅ [Main] Graph rebuilt after disconnecting '{name}'.")
+    # Run rebuild in background to avoid blocking
+    logger.info(f"🔄 [Main] Scheduling graph rebuild after removing '{name}'...")
+
+    async def delayed_rebuild():
+        try:
+            # Wait a bit to let any cleanup operations complete
+            await asyncio.sleep(0.5)
+            await agent_runtime.rebuild_graph()
+            logger.info(f"✅ [Main] Graph rebuilt after disconnecting '{name}'.")
+        except Exception as rebuild_error:
+            logger.error(f"❌ [Main] Error rebuilding graph: {rebuild_error}")
+
+    # Store task reference to prevent garbage collection
+    task = asyncio.create_task(delayed_rebuild())
+    # Don't await - let it run in background
 
 
 @cl.on_chat_start
@@ -138,10 +164,28 @@ async def main(message: cl.Message):
 
     try:
         # 1. Call the Agent
-        result = await graph.ainvoke(
-            {"messages": [HumanMessage(content=message.content)]},
-            config=config,
-        )
+        try:
+            result = await graph.ainvoke(
+                {"messages": [HumanMessage(content=message.content)]},
+                config=config,
+            )
+        except Exception as graph_error:
+            # Log the full error for debugging
+            logger.exception(f"Error during graph execution: {graph_error}")
+            # Check if it's a connection error
+            error_msg = str(graph_error).lower()
+            if (
+                "closedresourceerror" in error_msg
+                or "no running event loop" in error_msg
+            ):
+                await cl.Message(
+                    content=f"⚠️ **Connection Error:** The MCP server connection was interrupted. Please try restarting the MCP servers or try again."
+                ).send()
+                return
+            else:
+                # Re-raise to be caught by outer exception handler
+                raise
+
         response_text = _extract_response(result.get("messages", []))
 
         # 2. Check for Job ID
@@ -259,7 +303,16 @@ async def main(message: cl.Message):
 
     except Exception as e:
         logger.exception("Error in main loop")
-        await cl.Message(content=f"An error occurred: {str(e)}").send()
+        # Provide more detailed error message
+        error_msg = str(e)
+        error_type = type(e).__name__
+        # If it's a connection error, provide helpful context
+        if "ClosedResourceError" in error_type or "no running event loop" in error_msg:
+            await cl.Message(
+                content=f"⚠️ **Connection Error:** The MCP server connection was interrupted. Please try again or restart the MCP servers."
+            ).send()
+        else:
+            await cl.Message(content=f"❌ **Error ({error_type}):** {error_msg}").send()
 
 
 @cl.on_chat_resume

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -18,6 +19,10 @@ print(f"\n{prompt_guides}\n")
 
 # Initialize tool response handler (module-level singleton)
 _tool_response_handler = ToolResponseHandler()
+
+# Maximum number of conversation turns to keep in history
+# A turn = human message + AI response + tool calls/results
+MAX_HISTORY_TURNS = int(os.getenv("MAX_HISTORY_TURNS", "10"))
 
 
 def build_graph(
@@ -40,10 +45,36 @@ def build_graph(
     llm_with_tools = llm.bind_tools(tool_list) if tool_list else llm
     memory = MemorySaver()
 
+    def truncate_history(messages: list) -> list:
+        """
+        Truncate message history to keep only the most recent conversation turns.
+        Preserves system messages and the last N conversation turns.
+        """
+        if len(messages) <= MAX_HISTORY_TURNS * 2:  # Rough estimate: 2 messages per turn
+            return messages
+        
+        # Separate system messages from conversation messages
+        system_messages = [msg for msg in messages if getattr(msg, "type", None) == "system"]
+        conversation_messages = [msg for msg in messages if getattr(msg, "type", None) != "system"]
+        
+        # If we have too many messages, keep only the most recent ones
+        if len(conversation_messages) > MAX_HISTORY_TURNS * 3:  # Allow for tool messages
+            # Keep the most recent messages (last N turns)
+            # A turn typically includes: human, ai, and possibly tool messages
+            # We'll keep the last MAX_HISTORY_TURNS * 3 messages to account for tool calls
+            truncated = conversation_messages[-(MAX_HISTORY_TURNS * 3):]
+            print(f"⚠️ [Graph] Truncated message history from {len(conversation_messages)} to {len(truncated)} messages (keeping last {MAX_HISTORY_TURNS} turns)")
+            return system_messages + truncated
+        
+        return messages
+
     async def query_or_respond(state: MessagesState):
         """Let the model decide whether it needs to call a tool."""
         system_message_content = f"{prompt_guides}"
         history = state.get("messages", [])
+        
+        # Truncate history if it's too long to prevent "Input is too long" errors
+        history = truncate_history(history)
 
         # Pre-check: Detect generation requests and prevent tool usage
         # This is a generic check that works for any agent
@@ -270,9 +301,13 @@ def build_graph(
 
     async def generate(state: MessagesState):
         """Generate the final answer using any newly retrieved context."""
+        
+        # Truncate history to prevent "Input is too long" errors
+        messages = state.get("messages", [])
+        messages = truncate_history(messages)
 
         # 1. Capture Tool Outputs
-        tool_messages = _gather_recent_tool_messages(state.get("messages", []))
+        tool_messages = _gather_recent_tool_messages(messages)
         print(
             f"🔍 [Graph] generate() called. Found {len(tool_messages)} tool message(s)"
         )
@@ -380,7 +415,7 @@ def build_graph(
         # Filter messages to ensure proper role alternation and avoid consecutive assistant messages
         conversation_messages = []
         last_type = None
-        for message in state["messages"]:
+        for message in messages:
             msg_type = message.type
             # Include human, system, and AI messages without tool_calls
             if msg_type in ("human", "system"):
