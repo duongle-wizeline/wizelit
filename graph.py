@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from shutil import copy
 from typing import Iterable, Sequence
 
 from langchain_core.language_models import BaseLanguageModel
@@ -40,23 +40,34 @@ def build_graph(
         # 1. Capture Tool Outputs
         tool_messages = _gather_recent_tool_messages(state.get("messages", []))
 
+        tool_result = []
         for message in tool_messages:
-            if isinstance(message, ToolMessage) and message.name == "get_job_status":
-                return {"messages": [AIMessage(content=message.content[0]["text"])]}
-            elif isinstance(message, ToolMessage) and message.name == "start_refactoring_job":
-                return {"messages": [AIMessage(content=f"Refactoring job has started. JOB_ID: {message.content[0]["text"]}.")]}
+            try:
+                # Attempt to parse the content as JSON
+                content = json.loads(message.content[0]["text"])
+
+                if isinstance(content, dict) and "is_final" in content:
+                    if content["is_final"]:
+                        return {"messages": [AIMessage(content=json.dumps(content["result"]))]}
+                    else:
+                        processed_message = ToolMessage(content=[{**message.content[0], "text": content["result"]}], tool_call_id=message.tool_call_id, name=message.name, artifact=message.artifact)
+                        tool_result.append(processed_message)
+                else:
+                    tool_result.append(message)
+            except (json.JSONDecodeError, TypeError, KeyError, IndexError) as e:
+                tool_result.append(message)
 
         docs_content = "\n\n".join(
-            _stringify_tool_message(msg) for msg in tool_messages
+            _stringify_tool_message(msg) for msg in tool_result
         )
 
         # 2. STRICT System Prompt
         system_message_content = (
             f"{prompt_guides}"
-            f"\n\nCONTEXT FROM TOOLS:\n{docs_content}"
+            f"\n\nBase on the following result from tools, generate a final response:\n{docs_content}"
         )
 
-        print(f"\n🧠 [Graph] System Prompt:\n{system_message_content}\n")
+        print(f"\n🧠 [Graph] Final Prompt:\n{system_message_content}\n")
 
         conversation_messages = [
             message

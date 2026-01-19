@@ -201,7 +201,7 @@ async def _run_refactoring_crew(job: Job, code: str, instruction: str):
 @mcp.ingest(
     is_long_running=True,
 )
-async def start_refactoring_job(code_snippet: str, instruction: str, job: Job) -> str:
+async def start_refactoring_job(code_snippet: str, instruction: str, job: Job) -> Dict[str, Any]:
     """
     Submits a Python code snippet to the Engineering Crew for refactoring.
     Returns a Job ID immediately (does not wait for completion).
@@ -211,7 +211,9 @@ async def start_refactoring_job(code_snippet: str, instruction: str, job: Job) -
     job.run(_run_refactoring_crew(job, code_snippet, instruction))
     return job.id
 
-@mcp.ingest()
+@mcp.ingest(
+    is_final=True,
+)
 async def get_job_status(job_id: str) -> Dict[str, Any]:
     """
     Checks the status of a refactoring job. Returns logs or the final result.

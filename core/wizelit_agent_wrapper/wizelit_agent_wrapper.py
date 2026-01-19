@@ -90,6 +90,7 @@ class WizelitAgentWrapper:
     def ingest(
         self,
         is_long_running: bool = False,
+        is_final: bool = False,
         description: Optional[str] = None,
     ):
         """
@@ -97,10 +98,11 @@ class WizelitAgentWrapper:
 
         Args:
             is_long_running: If True, enables progress reporting
+            is_final: If True, marks this tool as the final step in a workflow
             description: Human-readable description of the tool
 
         Usage:
-            @agent.ingest(is_long_running=True, description="Forecasts revenue")
+            @agent.ingest(is_long_running=True, is_final=True, description="Forecasts revenue")
             def forecast_revenue(region: str) -> str:
                 return "Revenue projection: $5M"
         """
@@ -193,7 +195,7 @@ class WizelitAgentWrapper:
                     func_kwargs = kwargs
 
                 return await self._execute_tool(
-                    func, ctx, is_async, is_long_running,
+                    func, ctx, is_async, is_long_running, is_final,
                     tool_name, job, **func_kwargs
                 )
 
@@ -225,6 +227,7 @@ class WizelitAgentWrapper:
                 'function': func,
                 'wrapper': registered_tool,
                 'is_long_running': is_long_running,
+                'is_final': is_final,
             }
 
             # Return original function so it can still be called directly
@@ -237,6 +240,7 @@ class WizelitAgentWrapper:
         ctx: Context,
         is_async: bool,
         is_long_running: bool,
+        is_final: bool,
         tool_name: str,
         job: Optional[Job] = None,
         **kwargs
@@ -290,7 +294,10 @@ class WizelitAgentWrapper:
                         logging.warning(f"Function {tool_name} returned None but should return str. Returning empty string.")
                         result = ""
 
-                return result
+                return {
+                    "result": result,
+                    "is_final": is_final
+                }
 
             except Exception as e:
                 # Mark job as failed
@@ -345,6 +352,7 @@ class WizelitAgentWrapper:
         return {
             name: {
                 'is_long_running': info['is_long_running'],
+                'is_final': info['is_final'],
                 'llm_framework': info['llm_framework']
             }
             for name, info in self._tools.items()
