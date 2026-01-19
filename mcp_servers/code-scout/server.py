@@ -295,7 +295,7 @@ async def build_dependency_graph(
 
 @mcp.ingest(
     is_long_running=False,
-    description="Find symbol usages and analyze impact. Returns formatted human-readable text. Use this tool when user asks to find/search for symbol usage, function definitions, or code references.",
+    description="Find symbol usages and analyze impact in an EXISTING codebase or repository. Requires a target (directory path or GitHub URL) to search in. Use this tool ONLY when the user provides or points to an existing codebase/repository to analyze. Do NOT use for generating new code or examples.",
     response_handling={
         "mode": "direct",
     },
@@ -362,7 +362,7 @@ async def code_scout_symbol_usage(
 
 @mcp.ingest(
     is_long_running=False,
-    description="Search for text patterns in code. Returns formatted human-readable text. Use this tool when user asks to search/find/grep for text patterns, function names, or code snippets.",
+    description="Search for text patterns in an EXISTING codebase or repository. Requires a target (directory path or GitHub URL) to search in. Use this tool ONLY when the user provides or points to an existing codebase/repository to search. Do NOT use for generating new code or examples.",
     response_handling={
         "mode": "direct",
     },

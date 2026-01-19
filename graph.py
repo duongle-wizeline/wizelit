@@ -45,6 +45,96 @@ def build_graph(
         system_message_content = f"{prompt_guides}"
         history = state.get("messages", [])
 
+        # Pre-check: Detect generation requests and prevent tool usage
+        # This is a generic check that works for any agent
+        if history:
+            last_message = history[-1]
+            if hasattr(last_message, "content") and last_message.content:
+                user_request = str(last_message.content).lower()
+                # Generic patterns that indicate generation requests (not tool-specific)
+                generation_keywords = [
+                    "give me sample",
+                    "give me example",
+                    "show me sample",
+                    "show me example",
+                    "create a sample",
+                    "create an example",
+                    "generate sample",
+                    "generate example",
+                    "provide sample",
+                    "provide example",
+                    "write sample",
+                    "write example",
+                    "sample code",
+                    "example code",
+                    "hello world",
+                ]
+                # Check if user is asking to generate something without providing existing resources
+                is_generation_request = any(
+                    keyword in user_request for keyword in generation_keywords
+                )
+                # Check if user provided existing resources (URLs, file paths, code snippets)
+                has_existing_resources = any(
+                    indicator in user_request
+                    for indicator in [
+                        "http://",
+                        "https://",
+                        "github.com",
+                        "file://",
+                        "path:",
+                        "directory:",
+                        "here is",
+                        "here's",
+                        "this code",
+                        "my code",
+                        "existing",
+                    ]
+                )
+
+                # If it's a generation request without existing resources, use plain LLM without tools
+                # This avoids Bedrock validation issues and ensures direct response generation
+                if is_generation_request and not has_existing_resources:
+                    print(
+                        f"⚠️ [Graph] Detected generation request without existing resources. Using plain LLM (no tools) for direct response."
+                    )
+                    # Use plain LLM without tools for generation requests
+                    # Filter messages to ensure proper role alternation
+                    filtered_history = []
+                    i = 0
+                    while i < len(history):
+                        msg = history[i]
+                        msg_type = getattr(msg, "type", None)
+
+                        # Include human and system messages
+                        if msg_type in ("human", "system"):
+                            filtered_history.append(msg)
+                            i += 1
+                        # Include AI messages without tool_calls
+                        elif msg_type == "ai":
+                            ai_msg = msg
+                            if not getattr(ai_msg, "tool_calls", None):
+                                if (
+                                    not filtered_history
+                                    or filtered_history[-1].type != "ai"
+                                ):
+                                    filtered_history.append(ai_msg)
+                                i += 1
+                            else:
+                                # Skip AI messages with tool_calls for generation requests
+                                i += 1
+                        # Skip tool messages for generation requests
+                        elif msg_type == "tool":
+                            i += 1
+                        else:
+                            i += 1
+
+                    prompt = [
+                        SystemMessage(content=system_message_content)
+                    ] + filtered_history
+                    # Use plain LLM without tools
+                    response = await llm.ainvoke(prompt)
+                    return {"messages": [response]}
+
         # Filter messages to ensure proper role alternation and tool_use/tool_result pairing
         # Bedrock requires: tool_use blocks must be immediately followed by tool_result blocks
         filtered_history = []
@@ -98,9 +188,39 @@ def build_graph(
 
         # Log whether the LLM is using tool calling
         if hasattr(response, "tool_calls") and response.tool_calls:
-            print(
-                f"✅ [Graph] LLM is calling {len(response.tool_calls)} tool(s): {[tc.get('name') for tc in response.tool_calls]}"
-            )
+            # Validate tool calls - check if all tool names exist
+            valid_tool_names = {tool.name for tool in tool_list} if tool_list else set()
+            invalid_tool_calls = []
+            valid_tool_calls = []
+
+            for tc in response.tool_calls:
+                tool_name = tc.get("name")
+                if tool_name not in valid_tool_names:
+                    invalid_tool_calls.append(tool_name)
+                    print(
+                        f"❌ [Graph] LLM tried to call invalid tool '{tool_name}'. Valid tools: {list(valid_tool_names)}"
+                    )
+                else:
+                    valid_tool_calls.append(tc)
+
+            # If there are invalid tool calls, return a message prompting direct response
+            if invalid_tool_calls:
+                print(
+                    f"⚠️ [Graph] Invalid tool calls detected: {invalid_tool_calls}. Prompting LLM to respond directly."
+                )
+                return {
+                    "messages": [
+                        AIMessage(
+                            content="I cannot use tools for this request. Let me respond directly using my knowledge instead."
+                        )
+                    ]
+                }
+
+            # Only log if all tool calls are valid
+            if valid_tool_calls:
+                print(
+                    f"✅ [Graph] LLM is calling {len(valid_tool_calls)} tool(s): {[tc.get('name') for tc in valid_tool_calls]}"
+                )
         else:
             content_preview = (
                 str(response.content)[:200]
@@ -287,16 +407,30 @@ def build_graph(
     if tool_list:
         tool_node = ToolNode(tool_list)
         builder.add_node("tools", tool_node)
+
+        # Use custom condition to ensure early returns from query_or_respond go to END
+        def custom_tools_condition(state: MessagesState):
+            """Custom condition that checks for tool calls"""
+            messages = state.get("messages", [])
+            if messages:
+                last_message = messages[-1]
+                # Check if last message has tool_calls
+                if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+                    return "tools"
+            # No tool calls - route to END (not generate) to avoid double LLM calls
+            # This handles both early returns (generation requests) and normal responses without tools
+            return END
+
         builder.add_conditional_edges(
             "query_or_respond",
-            tools_condition,
+            custom_tools_condition,
             {END: END, "tools": "tools"},
         )
         builder.add_edge("tools", "generate")
+        builder.add_edge("generate", END)
     else:
         builder.add_edge("query_or_respond", "generate")
-
-    builder.add_edge("generate", END)
+        builder.add_edge("generate", END)
 
     compiled_graph = builder.compile(checkpointer=memory)
     return compiled_graph

@@ -206,7 +206,7 @@ async def _run_refactoring_crew(job: Job, code: str, instruction: str):
 
 @mcp.ingest(
     is_long_running=True,
-    description="Submits a Python code snippet to the Engineering Crew for refactoring. Returns a Job ID immediately (does not wait for completion).",
+    description="Refactors EXISTING Python code that the user provides. Use this ONLY when the user wants to refactor/improve/modify code they already have. Do NOT use this for generating new code, examples, or sample code. The user must provide existing code to refactor.",
     response_handling={
         "mode": "formatted",
         "template": "Refactoring job has started. JOB_ID: {value}.",
