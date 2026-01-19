@@ -12,7 +12,6 @@ from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
 from utils.prompt_guides import prompt_guides
-print(f"\n{prompt_guides}\n")
 
 def build_graph(
     llm: BaseLanguageModel,
@@ -63,11 +62,11 @@ def build_graph(
 
         # 2. STRICT System Prompt
         system_message_content = (
-            f"{prompt_guides}"
+            "You are Wizelit, an Engineering Manager. You have to follow these rules:\n"
+            f"\n1. Never write Python code yourself.\n"
+            f"\n2. If tools return JOB-ID, reply with format: \"I've started refactoring job with JOB_ID: <job_id>\".\n"
             f"\n\nBase on the following result from tools, generate a final response:\n{docs_content}"
         )
-
-        print(f"\n🧠 [Graph] Final Prompt:\n{system_message_content}\n")
 
         conversation_messages = [
             message
