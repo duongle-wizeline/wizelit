@@ -164,7 +164,7 @@ class AgentRuntime:
             self._sessions[label] = session
 
         try:
-            # Get MCP servers from in-memory storage (replaces agents.yaml)
+            # Get MCP servers from in-memory storage
             mcp_servers = get_mcp_servers()
 
             for server in mcp_servers.values():
