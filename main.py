@@ -1,4 +1,3 @@
-import yaml
 import json
 import logging
 import os
@@ -20,6 +19,7 @@ from agent import agent_runtime
 from database import DatabaseManager
 from utils import create_chat_settings
 from utils.prompt_guides import refresh_prompt_guides
+from utils.mcp_storage import add_mcp_server, remove_mcp_server, get_mcp_server
 
 
 db_manager = DatabaseManager()
@@ -30,16 +30,17 @@ PROJECT_ROOT = Path(__file__).parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-CONFIG_DIR = PROJECT_ROOT / "config"
-CONFIG_DIR.mkdir(exist_ok=True)
-CONFIG_FILE = CONFIG_DIR / "agents.yaml"
-
 TASK_TIMEOUT = os.getenv("TASK_TIMEOUT", 1200)  # Default to 20 minutes
 
 
 @cl.on_app_startup
 async def on_startup():
     await db_manager.init_db()
+    # Refresh handler metadata on startup
+    from utils.tool_response_handler import _tool_response_handler
+
+    _tool_response_handler.refresh_metadata()
+    logger.info("✅ [Main] Handler metadata refreshed on startup")
     await agent_runtime.ensure_ready()
 
 
@@ -64,41 +65,62 @@ async def on_mcp(connection, session: ClientSession):
         if t.meta and isinstance(t.meta, dict):
             if "wizelit_response_handling" in t.meta:
                 tool_dict["response_handling"] = t.meta["wizelit_response_handling"]
+                logger.info(
+                    f"✅ [Main] Found response_handling for {t.name}: {t.meta['wizelit_response_handling']}"
+                )
+            else:
+                logger.debug(
+                    f"⚠️ [Main] No response_handling in meta for {t.name}. Meta keys: {list(t.meta.keys())}"
+                )
 
         tools.append(tool_dict)
 
-    mcp_servers = {}
-    if CONFIG_FILE.exists():
-        with open(CONFIG_FILE, "r") as f:
-            mcp_servers = yaml.safe_load(f) or {}
-
-    new_connection = connection.__dict__
+    # Store server metadata in memory (replaces agents.yaml)
+    server_key = connection.name.replace(" ", "")
+    new_connection = connection.__dict__.copy()
     new_connection["tools"] = tools
-    mcp_servers[connection.name.replace(" ", "")] = new_connection
-    # Save servers to config file
-    with open(CONFIG_FILE, "w") as f:
-        yaml.dump(mcp_servers, f, default_flow_style=False)
+
+    # Check if server already exists (to avoid overwriting on Chainlit auto-reconnect)
+    existing_server = get_mcp_server(server_key)
+    if existing_server:
+        logger.info(
+            f"ℹ️ [Main] MCP server '{connection.name}' already in storage, updating (Chainlit auto-reconnect)"
+        )
+
+    add_mcp_server(server_key, new_connection)
+    logger.info(f"✅ [Main] Stored MCP server '{connection.name}' in memory")
     refresh_prompt_guides()
     # Refresh tool response handler metadata
     from utils.tool_response_handler import _tool_response_handler
 
     _tool_response_handler.refresh_metadata()
 
+    # CRITICAL: Rebuild the graph so it includes the newly added tools
+    # The graph is cached and won't automatically pick up new tools
+    logger.info(
+        f"🔄 [Main] Rebuilding graph to include new tools from '{connection.name}'..."
+    )
+    await agent_runtime.rebuild_graph()
+    logger.info(f"✅ [Main] Graph rebuilt. MCP server '{connection.name}' connected.")
+
 
 @cl.on_mcp_disconnect
 async def on_mcp_disconnect(name: str, session: ClientSession):
     """Called when an MCP connection is terminated"""
-    # Remove the disconnected server from config
-    if CONFIG_FILE.exists():
-        with open(CONFIG_FILE, "r") as f:
-            mcp_servers = yaml.safe_load(f)
+    # Remove the disconnected server from in-memory storage
+    no_spaces_name = name.replace(" ", "")
+    remove_mcp_server(no_spaces_name)
 
-        no_spaces_name = name.replace(" ", "")
-        if no_spaces_name in mcp_servers:
-            del mcp_servers[no_spaces_name]
-            with open(CONFIG_FILE, "w") as f:
-                yaml.dump(mcp_servers, f, default_flow_style=False)
-            refresh_prompt_guides()
+    refresh_prompt_guides()
+    # Refresh tool response handler metadata
+    from utils.tool_response_handler import _tool_response_handler
+
+    _tool_response_handler.refresh_metadata()
+
+    # CRITICAL: Rebuild the graph after removing tools
+    logger.info(f"🔄 [Main] Rebuilding graph after removing '{name}'...")
+    await agent_runtime.rebuild_graph()
+    logger.info(f"✅ [Main] Graph rebuilt after disconnecting '{name}'.")
 
 
 @cl.on_chat_start
@@ -314,14 +336,48 @@ def _extract_response(messages: list[BaseMessage]) -> str:
             # This is a generic pattern that works for any tool
             import re
 
-            # Pattern: function_name(param="value", param2="value2") or function_name(param=value)
-            function_call_pattern = r"^\w+\s*\([^)]*\)\s*$"
-            if re.match(function_call_pattern, content.strip()):
+            content_stripped = content.strip()
+
+            # Pattern 1: Exact function call match: function_name(param="value", param2="value2")
+            # Match: word characters, optional whitespace, opening paren, any content, closing paren, optional whitespace
+            function_call_pattern = r"^\s*\w+\s*\([^)]*\)\s*$"
+            if re.match(function_call_pattern, content_stripped, re.MULTILINE):
                 logger.warning(
-                    f"LLM generated function call syntax instead of using tools: {content}"
+                    f"❌ [Main] LLM generated function call syntax instead of using tools: {content_stripped}"
                 )
                 # Return a helpful message instead of showing the function call
                 return "I need to use the available tools to complete this request. Let me try again."
+
+            # Pattern 2: Function call at the start (even if there's more text after)
+            # This catches cases like "search_code(...) and then some explanation" or "scan_directory(...)\n[...]"
+            if re.match(r"^\s*\w+\s*\([^)]*\)", content_stripped):
+                logger.warning(
+                    f"❌ [Main] LLM generated function call syntax at start of response: {content_stripped[:200]}"
+                )
+                # If there's content after the function call, it might be tool output - extract just the function call part
+                # But for now, just filter the whole thing
+                return "I need to use the available tools to complete this request. Let me try again."
+
+            # Pattern 3: Function call followed by JSON/list output (LLM generated code + tool result mixed)
+            # Catches: "function_name(...)\n[{...}]" or "function_name(...)\n[...]"
+            if re.match(r"^\s*\w+\s*\([^)]*\)\s*\n", content_stripped):
+                logger.warning(
+                    f"❌ [Main] LLM generated function call syntax followed by output: {content_stripped[:300]}"
+                )
+                return "I need to use the available tools to complete this request. Let me try again."
+
+            # Pattern 4: Check for common function call patterns (more lenient)
+            # Catches: function_name(...) with any spacing
+            if re.search(r"\w+\s*\([^)]+\)", content_stripped):
+                # Only flag if it looks like a standalone function call (not part of explanation)
+                # If the content is mostly just a function call, filter it
+                if len(content_stripped) < 200 and re.match(
+                    r"^\s*\w+\s*\([^)]*\)", content_stripped
+                ):
+                    logger.warning(
+                        f"❌ [Main] LLM generated function call syntax (lenient match): {content_stripped}"
+                    )
+                    return "I need to use the available tools to complete this request. Let me try again."
 
             return content
     return ""

@@ -1,6 +1,5 @@
 import os
 from dotenv import load_dotenv
-import yaml
 
 load_dotenv()
 
@@ -12,6 +11,7 @@ from mcp.client.sse import sse_client
 from langchain_mcp_adapters.tools import load_mcp_tools
 from graph import build_graph
 from utils.bedrock_config import normalize_aws_env, resolve_bedrock_model_id
+from utils.mcp_storage import get_mcp_servers
 
 
 class AgentRuntime:
@@ -24,6 +24,20 @@ class AgentRuntime:
     async def ensure_ready(self):
         if self._graph is not None:
             return
+        await self._rebuild_graph()
+
+    async def _rebuild_graph(self):
+        """Rebuild the graph with current tools from in-memory storage"""
+        # Only rebuild if graph doesn't exist yet
+        # If graph exists, we should not rebuild it here - use rebuild_graph() explicitly
+        if self._graph is not None:
+            # Graph already exists, don't rebuild
+            return
+
+        # Reset state (no connections to close on initial build)
+        self._exit_stack = AsyncExitStack()
+        self._sessions = {}
+        self._tool_sessions = {}
 
         tools_all = []
 
@@ -49,8 +63,8 @@ class AgentRuntime:
             tools_all.extend(tools)
 
         try:
-            with open("config/agents.yaml") as f:
-                mcp_servers = yaml.safe_load(f) or {}
+            # Get MCP servers from in-memory storage (replaces agents.yaml)
+            mcp_servers = get_mcp_servers()
 
             for server in mcp_servers.values():
                 await connect_and_load(server["name"], server["url"])
@@ -65,11 +79,44 @@ class AgentRuntime:
             )
 
             self._graph = build_graph(llm=llm, tools=tools_all)
+            print(f"✅ [Agent] Graph rebuilt with {len(tools_all)} tools")
 
         except Exception as e:
             print(f"❌ [Agent] Connection Failed: {e}")
             await self._exit_stack.aclose()
             raise e
+
+    async def rebuild_graph(self):
+        """Public method to force graph rebuild (e.g., after MCP servers are added/removed)"""
+        # Close existing MCP connections if any (but not database connections)
+        if self._graph is not None:
+            # Store old exit stack
+            old_exit_stack = self._exit_stack
+            old_sessions = self._sessions.copy()
+            old_tool_sessions = self._tool_sessions.copy()
+
+            # Create new exit stack immediately (before closing old one)
+            self._exit_stack = AsyncExitStack()
+            self._sessions = {}
+            self._tool_sessions = {}
+            self._graph = None
+
+            # Close old connections in background (don't wait for it)
+            async def close_old_connections():
+                try:
+                    if old_sessions or old_tool_sessions:
+                        await old_exit_stack.aclose()
+                        # Small delay to ensure connections are fully closed
+                        await asyncio.sleep(0.1)
+                except Exception as e:
+                    # Log but don't fail - connections might already be closed
+                    print(f"⚠️ [Agent] Error closing old exit stack (non-critical): {e}")
+
+            # Close old connections asynchronously (don't block)
+            asyncio.create_task(close_old_connections())
+
+        # Now rebuild
+        await self._rebuild_graph()
 
     async def get_graph(self):
         if self._graph is None:
@@ -89,5 +136,6 @@ class AgentRuntime:
         if not session:
             raise ValueError(f"Tool '{name}' is not registered in any session")
         return await session.call_tool(name, arguments)
+
 
 agent_runtime = AgentRuntime()

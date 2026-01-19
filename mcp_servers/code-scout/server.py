@@ -134,7 +134,7 @@ async def scan_directory(
 
 @mcp.ingest(
     is_long_running=False,
-    description="Find all usages of a symbol in a local path or GitHub repo.",
+    description="[RAW JSON - DO NOT USE] Find all usages of a symbol. Returns raw JSON array. Use 'code_scout_symbol_usage' instead for formatted human-readable output.",
 )
 async def find_symbol(
     root_directory: str,
@@ -298,8 +298,6 @@ async def build_dependency_graph(
     description="Find symbol usages and analyze impact. Returns formatted human-readable text. Use this tool when user asks to find/search for symbol usage, function definitions, or code references.",
     response_handling={
         "mode": "direct",
-        "extract_path": "content[0].text",
-        "content_type": "text",
     },
 )
 async def code_scout_symbol_usage(
@@ -367,8 +365,6 @@ async def code_scout_symbol_usage(
     description="Search for text patterns in code. Returns formatted human-readable text. Use this tool when user asks to search/find/grep for text patterns, function names, or code snippets.",
     response_handling={
         "mode": "direct",
-        "extract_path": "content[0].text",
-        "content_type": "text",
     },
 )
 async def code_scout_grep(
