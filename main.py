@@ -19,7 +19,16 @@ from agent import agent_runtime
 from database import DatabaseManager
 from utils import create_chat_settings
 from utils.prompt_guides import refresh_prompt_guides
-from utils.mcp_storage import add_mcp_server, remove_mcp_server, get_mcp_server
+from utils.mcp_storage import (
+    add_mcp_server,
+    remove_mcp_server,
+    get_mcp_server,
+    clear_all,
+    get_mcp_servers,
+    is_server_removed,
+    clear_removed_servers,
+    allow_server_reconnect,
+)
 
 
 db_manager = DatabaseManager()
@@ -32,20 +41,77 @@ if str(PROJECT_ROOT) not in sys.path:
 
 TASK_TIMEOUT = os.getenv("TASK_TIMEOUT", 1200)  # Default to 20 minutes
 
+# Track when the app started (to distinguish auto-reconnect from manual add)
+_app_start_time = None
+
 
 @cl.on_app_startup
 async def on_startup():
+    global _app_start_time
+    _app_start_time = time.time()
+
     await db_manager.init_db()
+
+    # CRITICAL: Clear all MCP servers from in-memory storage on startup
+    # This ensures that only MCP servers that Chainlit successfully auto-reconnects to
+    # (via on_mcp_connect) are loaded, preventing stale connections from previous sessions
+    existing_servers = get_mcp_servers()
+    if existing_servers:
+        logger.info(
+            f"🧹 [Main] Clearing {len(existing_servers)} existing MCP server(s) from storage on startup"
+        )
+        clear_all()
+
+    # NOTE: We do NOT clear the removed servers list on startup
+    # This ensures that if Chainlit tries to auto-reconnect to servers that were
+    # explicitly removed in a previous session, we will reject those connections
+    # The removed list persists across restarts via a file (.removed_mcp_servers.json)
+    # However, if a user manually adds a server after startup, we'll allow it and remove from blacklist
+    logger.info(
+        f"📋 [Main] Removed servers list persists across restarts (prevents unwanted auto-reconnects)"
+    )
+
     # Refresh handler metadata on startup
     from utils.tool_response_handler import _tool_response_handler
 
     _tool_response_handler.refresh_metadata()
     logger.info("✅ [Main] Handler metadata refreshed on startup")
-    await agent_runtime.ensure_ready()
+
+    # Don't call ensure_ready() here - let Chainlit auto-reconnect first via on_mcp_connect
+    # This ensures we only load servers that Chainlit successfully reconnects to
+    # The graph will be built when the first query comes in (via get_graph())
+    logger.info(
+        "✅ [Main] Startup complete. Waiting for Chainlit to auto-reconnect MCP servers..."
+    )
 
 
 @cl.on_mcp_connect
 async def on_mcp(connection, session: ClientSession):
+    server_key = connection.name.replace(" ", "")
+
+    # Check if this server was explicitly removed
+    if is_server_removed(server_key):
+        # Distinguish between auto-reconnect (during startup) and manual add (after startup)
+        # Auto-reconnects happen within the first 10 seconds after startup
+        # Manual adds happen later when user explicitly adds via UI
+        startup_window = 10  # seconds
+        time_since_startup = time.time() - (_app_start_time or 0)
+
+        if time_since_startup < startup_window:
+            # This is likely an auto-reconnect during startup - reject it
+            logger.warning(
+                f"🚫 [Main] Rejecting auto-reconnect to '{connection.name}' - server was explicitly removed (startup window: {time_since_startup:.1f}s)"
+            )
+            # Don't add to storage, don't rebuild graph
+            # The connection will be established by Chainlit, but we won't use it
+            return
+        else:
+            # This is likely a manual add after startup - allow it and remove from blacklist
+            logger.info(
+                f"✅ [Main] Allowing manual re-add of '{connection.name}' (removed from blacklist, time since startup: {time_since_startup:.1f}s)"
+            )
+            allow_server_reconnect(server_key)
+
     # List available tools
     result = await session.list_tools()
 
@@ -76,7 +142,6 @@ async def on_mcp(connection, session: ClientSession):
         tools.append(tool_dict)
 
     # Store server metadata in memory (replaces agents.yaml)
-    server_key = connection.name.replace(" ", "")
     new_connection = connection.__dict__.copy()
     new_connection["tools"] = tools
 
@@ -124,6 +189,12 @@ async def on_mcp_disconnect(name: str, session: ClientSession):
     # Remove the disconnected server from in-memory storage
     no_spaces_name = name.replace(" ", "")
     remove_mcp_server(no_spaces_name)
+    logger.info(f"🗑️ [Main] Removed MCP server '{name}' from storage")
+
+    # CRITICAL: Immediately invalidate the graph so it will be rebuilt on next access
+    # This ensures the graph doesn't have stale tools
+    agent_runtime.invalidate_graph()
+    logger.info(f"🔄 [Main] Graph invalidated after disconnecting '{name}'")
 
     refresh_prompt_guides()
     # Refresh tool response handler metadata
