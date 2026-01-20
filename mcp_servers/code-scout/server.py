@@ -240,24 +240,39 @@ async def git_blame(
 
 
 @mcp.ingest(
-    is_long_running=False, description="Build a dependency graph from symbol usages."
+    is_long_running=False,
+    description="Build a dependency graph for a repository or codebase. Use this tool when the user asks to 'build dependency graph for repository X', 'create dependency graph', 'show dependencies', 'analyze dependencies', or similar requests involving dependency analysis of a codebase. Accepts a target parameter which can be a GitHub URL (e.g., https://github.com/owner/repo) or a local directory path. Returns a formatted graph showing all symbols with their dependencies and dependents. This tool works with EXISTING codebases and repositories - it does NOT generate new code.",
+    response_handling={
+        "mode": "direct",
+    },
 )
 async def build_dependency_graph(
     root_directory: str,
     pattern: str = "*.py",
     github_token: Optional[str] = None,
 ):
-    def _run():
+    def _run() -> str:
         scout = _init_scout(root_directory, github_token)
         try:
             if not scout.symbol_usages:
                 scout.scan_directory(pattern)
             graph = scout.build_dependency_graph()
 
-            # Convert file paths in nodes if it's a GitHub repo
-            result = {}
-            for symbol, node in graph.items():
+            if not graph:
+                return f"No dependency graph could be built for {root_directory}. The repository might be empty or contain no Python symbols."
+
+            # Convert file paths in nodes if it's a GitHub repo and format as readable text
+            lines = [
+                f"Dependency Graph for {root_directory}",
+                f"Total symbols: {len(graph)}",
+                "",
+            ]
+
+            for symbol, node in sorted(graph.items()):
                 node_dict = asdict(node)
+
+                # Convert file path if GitHub repo
+                file_path = node_dict.get("file_path", "?")
                 if (
                     scout.original_input
                     and "github.com" in scout.original_input.lower()
@@ -265,25 +280,36 @@ async def build_dependency_graph(
                     from code_scout.github_helper import GitHubHelper
 
                     parsed = GitHubHelper.parse_github_url(scout.original_input)
-                    if parsed and "file_path" in node_dict:
+                    if parsed and file_path and file_path != "?":
                         owner = parsed.get("owner")
                         repo = parsed.get("repo")
                         ref = parsed.get("ref", "main")
                         root_path = Path(scout.root_directory).resolve()
                         try:
-                            file_path_obj = Path(node_dict["file_path"]).resolve()
+                            file_path_obj = Path(file_path).resolve()
                             if file_path_obj.is_relative_to(root_path):
                                 rel_path = str(file_path_obj.relative_to(root_path))
                             else:
                                 rel_path = str(file_path_obj)
-                            node_dict["file_path"] = (
-                                f"https://github.com/{owner}/{repo}/blob/{ref}/{rel_path}"
-                            )
+                            file_path = f"https://github.com/{owner}/{repo}/blob/{ref}/{rel_path}"
                         except Exception:
                             pass
-                result[symbol] = node_dict
 
-            return result
+                lines.append(f"Symbol: {symbol}")
+                lines.append(f"  File: {file_path}")
+
+                deps = node_dict.get("dependencies", [])
+                dependents = node_dict.get("dependents", [])
+
+                if deps:
+                    lines.append(f"  Depends on: {', '.join(sorted(deps))}")
+                if dependents:
+                    lines.append(f"  Used by: {', '.join(sorted(dependents))}")
+                if not deps and not dependents:
+                    lines.append("  (No dependencies or dependents)")
+                lines.append("")
+
+            return "\n".join(lines)
         finally:
             scout.cleanup()
 
