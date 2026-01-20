@@ -18,10 +18,10 @@ LLM_FRAMEWORK_CREWAI = "crewai"
 LLM_FRAMEWORK_LANGCHAIN = "langchain"
 LLM_FRAMEWORK_LANGGRAPH = "langraph"
 
-LlmFrameworkType = Literal['crewai', 'langchain', 'langraph', None]
+LlmFrameworkType = Literal["crewai", "langchain", "langraph", None]
 
 # Context variable for current Job instance
-_current_job: ContextVar[Optional[Job]] = ContextVar('_current_job', default=None)
+_current_job: ContextVar[Optional[Job]] = ContextVar("_current_job", default=None)
 
 
 class CurrentJob:
@@ -29,6 +29,7 @@ class CurrentJob:
     Dependency injection class for Job instances.
     Similar to CurrentContext(), returns the current Job instance from context.
     """
+
     def __call__(self) -> Optional[Job]:
         """Return the current Job instance from context."""
         return _current_job.get()
@@ -47,8 +48,8 @@ class WizelitAgentWrapper:
         host: str = "0.0.0.0",
         port: int = 8080,
         version: str = "1.0.0",
-        db_manager: Optional['DatabaseManager'] = None,
-        enable_streaming: bool = True
+        db_manager: Optional["DatabaseManager"] = None,
+        enable_streaming: bool = True,
     ):
         """
         Initialize the Wizelit Agent.
@@ -78,6 +79,7 @@ class WizelitAgentWrapper:
             redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
             try:
                 from core.wizelit_agent_wrapper.streaming import LogStreamer
+
                 self._log_streamer = LogStreamer(redis_url)
                 print(f"Log streaming enabled via Redis: {redis_url}")
             except ImportError:
@@ -85,12 +87,15 @@ class WizelitAgentWrapper:
             except Exception as e:
                 print(f"Warning: Failed to initialize log streamer: {e}")
 
-        print(f"WizelitAgentWrapper initialized with name: {name}, transport: {transport}, host: {host}, port: {port}")
+        print(
+            f"WizelitAgentWrapper initialized with name: {name}, transport: {transport}, host: {host}, port: {port}"
+        )
 
     def ingest(
         self,
         is_long_running: bool = False,
         description: Optional[str] = None,
+        response_handling: Optional[Dict[str, Any]] = None,
     ):
         """
         Decorator to convert a function into an MCP tool.
@@ -98,12 +103,46 @@ class WizelitAgentWrapper:
         Args:
             is_long_running: If True, enables progress reporting
             description: Human-readable description of the tool
+            response_handling: Optional dict configuring how tool responses are handled:
+                {
+                    "mode": "direct" | "formatted" | "default",  # Default: "default"
+                    "extract_path": "content[0].text",  # Optional: path to extract value. Default: "content[0].text" (MCP format)
+                    "template": "Message: {value}",  # Optional: template for formatted mode. Default: "{value}"
+                    "content_type": "text" | "json" | "auto"  # Default: "text"
+                }
+
+                Mode options:
+                - "direct": Return response directly to user (bypass LLM processing)
+                - "formatted": Format response using template before returning to user
+                - "default": Normal LLM processing (let LLM interpret and respond)
+
+                Content type options:
+                - "text": Always convert content to plain string using str(). Use for human-readable text responses.
+                  Example: "Hello world" -> "Hello world", {"key": "value"} -> "{'key': 'value'}"
+
+                - "json": Format content as pretty-printed JSON. If content is a string, tries to parse it as JSON first.
+                  Use when you want structured data displayed as formatted JSON.
+                  Example: {"key": "value"} -> '{\n  "key": "value"\n}', "Hello" -> "Hello" (if not valid JSON)
+
+                - "auto": Smart formatting - strings returned as-is, dicts/lists converted to JSON, other types to string.
+                  Use when content type is unknown or mixed.
+                  Example: "Hello" -> "Hello", {"key": "value"} -> '{\n  "key": "value"\n}', 123 -> "123"
 
         Usage:
-            @agent.ingest(is_long_running=True, description="Forecasts revenue")
-            def forecast_revenue(region: str) -> str:
-                return "Revenue projection: $5M"
+            @agent.ingest(
+                is_long_running=True,
+                description="Start a job",
+                response_handling={
+                    "mode": "formatted",
+                    "extract_path": "content[0].text",
+                    "template": "Job started. ID: {value}",
+                    "content_type": "text"
+                }
+            )
+            def start_job(code: str, job: Job) -> str:
+                return job.id
         """
+
         def decorator(func: Callable) -> Callable:
             # Store original function metadata
             tool_name = func.__name__
@@ -120,23 +159,23 @@ class WizelitAgentWrapper:
             params_list = list(sig.parameters.values())
 
             # Check if function has 'job' parameter (for backward compatibility)
-            has_job_param = sig.parameters.get('job') is not None
-
+            has_job_param = sig.parameters.get("job") is not None
 
             if is_long_running and not has_job_param:
-                raise ValueError("is_long_running is True but 'job' parameter is not provided")
-
+                raise ValueError(
+                    "is_long_running is True but 'job' parameter is not provided"
+                )
 
             # Remove original 'job' parameter if it exists
             if has_job_param:
-                params_list = [p for p in params_list if p.name != 'job']
+                params_list = [p for p in params_list if p.name != "job"]
 
             # Add ctx as the last parameter with CurrentContext() as default
             ctx_param = inspect.Parameter(
-                'ctx',
+                "ctx",
                 inspect.Parameter.KEYWORD_ONLY,
                 default=CurrentContext(),
-                annotation=Context
+                annotation=Context,
             )
             params_list.append(ctx_param)
 
@@ -144,10 +183,10 @@ class WizelitAgentWrapper:
             # Use None as default - we'll resolve CurrentJob() in the wrapper at call time
             if has_job_param:
                 job_param = inspect.Parameter(
-                    'job',
+                    "job",
                     inspect.Parameter.KEYWORD_ONLY,
                     default=None,
-                    annotation=Any  # Use Any to avoid Pydantic issues
+                    annotation=Any,  # Use Any to avoid Pydantic issues
                 )
                 params_list.append(job_param)
 
@@ -157,7 +196,7 @@ class WizelitAgentWrapper:
             async def tool_wrapper(*args, **kwargs):
                 """MCP-compliant wrapper with streaming."""
                 # Extract ctx from kwargs (injected by fast-mcp via CurrentContext())
-                ctx = kwargs.pop('ctx', None)
+                ctx = kwargs.pop("ctx", None)
                 if ctx is None:
                     raise ValueError("Context not injected by fast-mcp")
 
@@ -165,7 +204,7 @@ class WizelitAgentWrapper:
                 # Handle case where fast-mcp might pass CurrentJob instance instead of Job
                 job = None
                 if has_job_param:
-                    job = kwargs.pop('job', None)
+                    job = kwargs.pop("job", None)
                     # If job is a CurrentJob instance, call it to get the actual Job
                     if isinstance(job, CurrentJob):
                         job = job()
@@ -175,13 +214,16 @@ class WizelitAgentWrapper:
                 # This ensures parameters are correctly passed even if fast-mcp uses positional args
                 # Create a signature without 'job' since we've already extracted it
                 func_sig = inspect.signature(func)
-                if has_job_param and 'job' in func_sig.parameters:
+                if has_job_param and "job" in func_sig.parameters:
                     # Remove 'job' from signature for binding since we handle it separately
                     params_without_job = {
-                        name: param for name, param in func_sig.parameters.items()
-                        if name != 'job'
+                        name: param
+                        for name, param in func_sig.parameters.items()
+                        if name != "job"
                     }
-                    func_sig = func_sig.replace(parameters=list(params_without_job.values()))
+                    func_sig = func_sig.replace(
+                        parameters=list(params_without_job.values())
+                    )
 
                 try:
                     bound_args = func_sig.bind(*args, **kwargs)
@@ -189,14 +231,14 @@ class WizelitAgentWrapper:
                     func_kwargs = bound_args.arguments
                 except TypeError as e:
                     # Fallback: if binding fails, use kwargs as-is (shouldn't happen normally)
-                    logging.warning(f"Failed to bind arguments for {tool_name}: {e}. Args: {args}, Kwargs: {kwargs}")
+                    logging.warning(
+                        f"Failed to bind arguments for {tool_name}: {e}. Args: {args}, Kwargs: {kwargs}"
+                    )
                     func_kwargs = kwargs
 
                 return await self._execute_tool(
-                    func, ctx, is_async, is_long_running,
-                    tool_name, job, **func_kwargs
+                    func, ctx, is_async, is_long_running, tool_name, job, **func_kwargs
                 )
-
 
             # Set the signature with ctx as last parameter with CurrentContext() default
             tool_wrapper.__signature__ = new_sig
@@ -206,19 +248,32 @@ class WizelitAgentWrapper:
             # Copy annotations and add Context
             # Note: We don't add job annotation here since we use Any and exclude it from schema
             new_annotations = {}
-            if hasattr(func, '__annotations__'):
+            if hasattr(func, "__annotations__"):
                 new_annotations.update(func.__annotations__)
-            new_annotations['ctx'] = Context
+            new_annotations["ctx"] = Context
             if has_job_param:
-                new_annotations['job'] = Any  # Use Any instead of Job to avoid Pydantic schema issues
+                new_annotations["job"] = (
+                    Any  # Use Any instead of Job to avoid Pydantic schema issues
+                )
             tool_wrapper.__annotations__ = new_annotations
 
             # Register with fast-mcp
             # Exclude ctx and job from schema generation since they're dependency-injected
-            exclude_args = ['ctx']
+            exclude_args = ["ctx"]
             if has_job_param:
-                exclude_args.append('job')
-            registered_tool = self._mcp.tool(description=tool_description, exclude_args=exclude_args)(tool_wrapper)
+                exclude_args.append("job")
+
+            # Prepare tool kwargs
+            tool_kwargs = {
+                "description": tool_description,
+                "exclude_args": exclude_args,
+            }
+
+            # Add response_handling metadata to tool's meta field (exposed via MCP protocol)
+            if response_handling:
+                tool_kwargs["meta"] = {"wizelit_response_handling": response_handling}
+
+            registered_tool = self._mcp.tool(**tool_kwargs)(tool_wrapper)
 
             # Store tool metadata
             self._tools[tool_name] = {
@@ -229,6 +284,7 @@ class WizelitAgentWrapper:
 
             # Return original function so it can still be called directly
             return func
+
         return decorator
 
     async def _execute_tool(
@@ -239,18 +295,14 @@ class WizelitAgentWrapper:
         is_long_running: bool,
         tool_name: str,
         job: Optional[Job] = None,
-        **kwargs
+        **kwargs,
     ) -> Any:
         """Central execution method for all tools."""
 
         token = None
         # Create Job instance if not provided
         if job is None and is_long_running:
-            job = Job(
-                ctx,
-                db_manager=self._db_manager,
-                log_streamer=self._log_streamer
-            )
+            job = Job(ctx, db_manager=self._db_manager, log_streamer=self._log_streamer)
 
             # Persist job to database BEFORE any logs are emitted
             if self._db_manager:
@@ -266,8 +318,18 @@ class WizelitAgentWrapper:
             try:
                 # Add job to kwargs if function signature includes it
                 func_sig = inspect.signature(func)
-                if 'job' in func_sig.parameters and job is not None:
-                    kwargs['job'] = job
+                if "job" in func_sig.parameters:
+                    # For non-long-running tools, create a minimal job if needed
+                    if job is None and not is_long_running:
+                        # Create a lightweight job for non-long-running tools that require it
+                        job = Job(
+                            ctx,
+                            db_manager=self._db_manager,
+                            log_streamer=self._log_streamer,
+                        )
+                        # Don't persist to DB for fast tools, just create in memory
+                    if job is not None:
+                        kwargs["job"] = job
 
                 # Execute function (async or sync)
                 logging.info(f"kwargs: {kwargs}")
@@ -282,24 +344,32 @@ class WizelitAgentWrapper:
                     return_annotation = func_sig.return_annotation
                     # Check if return type is str (handle both direct str and Optional[str])
                     is_str_return = (
-                        return_annotation == str or
-                        (hasattr(return_annotation, '__origin__') and return_annotation.__origin__ is str) or
-                        (hasattr(return_annotation, '__args__') and str in getattr(return_annotation, '__args__', []))
+                        return_annotation == str
+                        or (
+                            hasattr(return_annotation, "__origin__")
+                            and return_annotation.__origin__ is str
+                        )
+                        or (
+                            hasattr(return_annotation, "__args__")
+                            and str in getattr(return_annotation, "__args__", [])
+                        )
                     )
                     if is_str_return:
-                        logging.warning(f"Function {tool_name} returned None but should return str. Returning empty string.")
+                        logging.warning(
+                            f"Function {tool_name} returned None but should return str. Returning empty string."
+                        )
                         result = ""
 
                 return result
 
             except Exception as e:
-                # Mark job as failed
-                job.status = "failed"
+                # Mark job as failed (only if job exists)
+                if job is not None:
+                    job.status = "failed"
 
                 # Stream error information
                 await ctx.report_progress(
-                    progress=0,
-                    message=f"Error in {tool_name}: {str(e)}"
+                    progress=0, message=f"Error in {tool_name}: {str(e)}"
                 )
                 raise
         finally:
@@ -312,7 +382,7 @@ class WizelitAgentWrapper:
         transport: Optional[str] = None,
         host: Optional[str] = None,
         port: Optional[int] = None,
-        **kwargs
+        **kwargs,
     ):
         """
         Start the MCP server.
@@ -328,13 +398,12 @@ class WizelitAgentWrapper:
         port = port or self._port
         print(f"🚀 Starting {self._name} MCP Server")
 
-
         if transport in ["http", "streamable-http"]:
             print(f"🌐 Listening on {host}:{port}")
 
         print(f"🔧 Registered {len(self._tools)} tool(s):")
         for tool_name, tool_info in self._tools.items():
-            lr_status = "⏱️  long-running" if tool_info['is_long_running'] else "⚡ fast"
+            lr_status = "⏱️  long-running" if tool_info["is_long_running"] else "⚡ fast"
             print(f"   • {tool_name} [{lr_status}]")
 
         # Start the server
@@ -432,14 +501,24 @@ class WizelitAgentWrapper:
                     "status": job_model.status,
                     "result": job_model.result,
                     "error": job_model.error,
-                    "created_at": job_model.created_at.isoformat() if job_model.created_at else None,
-                    "updated_at": job_model.updated_at.isoformat() if job_model.updated_at else None,
+                    "created_at": (
+                        job_model.created_at.isoformat()
+                        if job_model.created_at
+                        else None
+                    ),
+                    "updated_at": (
+                        job_model.updated_at.isoformat()
+                        if job_model.updated_at
+                        else None
+                    ),
                 }
         except Exception as e:
             logging.error(f"Error retrieving job from database: {e}")
             return None
 
-    async def get_job_logs_from_db(self, job_id: str, limit: int = 100) -> Optional[list]:
+    async def get_job_logs_from_db(
+        self, job_id: str, limit: int = 100
+    ) -> Optional[list]:
         """
         Retrieve job logs from database asynchronously.
 
@@ -500,7 +579,9 @@ class WizelitAgentWrapper:
         job.status = status
         return True
 
-    def set_job_result(self, job_id: str, result: Optional[str | dict[str, Any]]) -> bool:
+    def set_job_result(
+        self, job_id: str, result: Optional[str | dict[str, Any]]
+    ) -> bool:
         """
         Set the result of a job by job_id.
 
@@ -533,4 +614,3 @@ class WizelitAgentWrapper:
             return False
         job.error = error
         return True
-

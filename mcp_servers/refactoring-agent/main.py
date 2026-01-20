@@ -12,6 +12,7 @@ from core.wizelit_agent_wrapper import WizelitAgentWrapper, Job
 # Database (optional - for persistence)
 try:
     from database import DatabaseManager
+
     db_manager = DatabaseManager()
 except ImportError:
     db_manager = None
@@ -29,7 +30,7 @@ mcp = WizelitAgentWrapper(
     port=1337,
     transport="sse",
     db_manager=db_manager,
-    enable_streaming=enable_streaming
+    enable_streaming=enable_streaming,
 )
 
 
@@ -41,9 +42,12 @@ def _html_diff_viewer(from_lines: list[str], to_lines: list[str]) -> str:
 
     # Generate the HTML output (as a single string)
     # make_table includes HTML table boilerplate
-    html_diff = differ.make_table(from_lines, to_lines, fromdesc='Original', todesc='Modified')
+    html_diff = differ.make_table(
+        from_lines, to_lines, fromdesc="Original", todesc="Modified"
+    )
 
     return html_diff
+
 
 def _extract_lines(text: str) -> list[str]:
     # Break incoming message into an array of text lines (non-empty)
@@ -52,6 +56,7 @@ def _extract_lines(text: str) -> list[str]:
     if not lines:
         lines = [text]
     return lines
+
 
 async def _run_refactoring_crew(job: Job, code: str, instruction: str):
     """
@@ -144,10 +149,12 @@ async def _run_refactoring_crew(job: Job, code: str, instruction: str):
 
         # CrewAI kickoff is synchronous; run it off the event loop thread.
         job.logger.info("🚀 Kickoff started (analysis → refactor)...")
+
         # Capture any stdout/stderr from CrewAI internals (even if verbose=False).
         # This avoids noisy terminal spam while still surfacing errors/notes in logs.
         def _kickoff_captured():
             import io
+
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
                 out = crew.kickoff()
@@ -184,13 +191,12 @@ async def _run_refactoring_crew(job: Job, code: str, instruction: str):
 
         return {
             "code": final_code,
-            "html":
-                "<div>" +
-                "<h6 class='font-bold'>✅ Refactoring Complete!</h6>" +
-                "<br/>" +
-                "<p>Here is the side-by-side comparison:</p>" +
-                html_diff +
-                "</div>"
+            "html": "<div>"
+            + "<h6 class='font-bold'>✅ Refactoring Complete!</h6>"
+            + "<br/>"
+            + "<p>Here is the side-by-side comparison:</p>"
+            + html_diff
+            + "</div>",
         }
 
     except Exception as e:
@@ -200,6 +206,11 @@ async def _run_refactoring_crew(job: Job, code: str, instruction: str):
 
 @mcp.ingest(
     is_long_running=True,
+    description="Refactors EXISTING Python code that the user provides. Use this ONLY when the user wants to refactor/improve/modify code they already have. Do NOT use this for generating new code, examples, or sample code. The user must provide existing code to refactor.",
+    response_handling={
+        "mode": "formatted",
+        "template": "Refactoring job has started. JOB_ID: {value}.",
+    },
 )
 async def start_refactoring_job(code_snippet: str, instruction: str, job: Job) -> str:
     """
@@ -211,7 +222,11 @@ async def start_refactoring_job(code_snippet: str, instruction: str, job: Job) -
     job.run(_run_refactoring_crew(job, code_snippet, instruction))
     return job.id
 
-@mcp.ingest()
+
+@mcp.ingest(
+    description="Checks the status of a refactoring job. Returns logs or the final result. Falls back to database if job not found in memory.",
+    response_handling={"mode": "direct"},
+)
 async def get_job_status(job_id: str) -> Dict[str, Any]:
     """
     Checks the status of a refactoring job. Returns logs or the final result.
@@ -235,7 +250,7 @@ async def get_job_status(job_id: str) -> Dict[str, Any]:
             "status": job_data["status"],
             "logs": tail,
             "result": job_data.get("result"),
-            "error": job_data.get("error")
+            "error": job_data.get("error"),
         }
 
     # Job found in memory - return live data
@@ -244,30 +259,20 @@ async def get_job_status(job_id: str) -> Dict[str, Any]:
     tail = "\n".join(logs[-tail_n:]) if logs else "[no logs yet]"
 
     if job.status == "running":
-        return {
-            "status": "running",
-            "logs": tail
-        }
+        return {"status": "running", "logs": tail}
     elif job.status == "completed":
         # Include logs even on completion so callers don't miss the final wrap-up lines.
-        return {
-            "status": "completed",
-            "logs": tail,
-            "result": job.result or ""
-        }
+        return {"status": "completed", "logs": tail, "result": job.result or ""}
     else:
-        return {
-            "status": "failed",
-            "logs": tail,
-            "error": job.error or "Unknown error"
-        }
+        return {"status": "failed", "logs": tail, "error": job.error or "Unknown error"}
+
 
 @mcp.ingest()
 async def get_jobs() -> list[Job]:
     """
     Checks the status of a refactoring job. Returns logs or the final result.
     """
-    return [ job.id for job in mcp.get_jobs()]
+    return [job.id for job in mcp.get_jobs()]
 
 
 if __name__ == "__main__":

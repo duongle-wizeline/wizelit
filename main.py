@@ -1,4 +1,3 @@
-import yaml
 import json
 import logging
 import os
@@ -19,6 +18,8 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from agent import agent_runtime
 from database import DatabaseManager
 from utils import create_chat_settings
+from utils.prompt_guides import refresh_prompt_guides
+from utils.mcp_storage import add_mcp_server, remove_mcp_server, get_mcp_server
 
 
 db_manager = DatabaseManager()
@@ -29,17 +30,19 @@ PROJECT_ROOT = Path(__file__).parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-CONFIG_DIR = PROJECT_ROOT / "config"
-CONFIG_DIR.mkdir(exist_ok=True)
-CONFIG_FILE = CONFIG_DIR / "agents.yaml"
-
 TASK_TIMEOUT = os.getenv("TASK_TIMEOUT", 1200)  # Default to 20 minutes
 
 
 @cl.on_app_startup
 async def on_startup():
     await db_manager.init_db()
+    # Refresh handler metadata on startup
+    from utils.tool_response_handler import _tool_response_handler
+
+    _tool_response_handler.refresh_metadata()
+    logger.info("✅ [Main] Handler metadata refreshed on startup")
     await agent_runtime.ensure_ready()
+
 
 @cl.on_mcp_connect
 async def on_mcp(connection, session: ClientSession):
@@ -47,40 +50,104 @@ async def on_mcp(connection, session: ClientSession):
     result = await session.list_tools()
 
     # Process tool metadata
-    tools = [{
-        "name": t.name,
-        "description": t.description,
-        "input_schema": t.inputSchema,
-    } for t in result.tools]
+    tools = []
+    for t in result.tools:
+        tool_dict = {
+            "name": t.name,
+            "description": t.description,
+            "input_schema": t.inputSchema,
+            "output_schema": t.outputSchema,
+            "meta": t.meta,
+            "title": t.title,
+        }
 
-    # Store tools for later use
-    mcp_tools = cl.user_session.get("mcp_tools", {})
-    mcp_tools[connection.name] = tools
-    cl.user_session.set("mcp_tools", mcp_tools)
+        # Extract response_handling from MCP tool meta (from agent code via MCP protocol)
+        if t.meta and isinstance(t.meta, dict):
+            if "wizelit_response_handling" in t.meta:
+                tool_dict["response_handling"] = t.meta["wizelit_response_handling"]
+                logger.info(
+                    f"✅ [Main] Found response_handling for {t.name}: {t.meta['wizelit_response_handling']}"
+                )
+            else:
+                logger.debug(
+                    f"⚠️ [Main] No response_handling in meta for {t.name}. Meta keys: {list(t.meta.keys())}"
+                )
 
-    mcp_servers = {}
-    if CONFIG_FILE.exists():
-        with open(CONFIG_FILE, "r") as f:
-            mcp_servers = yaml.safe_load(f) or {}
+        tools.append(tool_dict)
 
-    mcp_servers[connection.name.replace(" ", "")] = connection.__dict__
-    # Save servers to config file
-    with open(CONFIG_FILE, "w") as f:
-        yaml.dump(mcp_servers, f, default_flow_style=False)
+    # Store server metadata in memory (replaces agents.yaml)
+    server_key = connection.name.replace(" ", "")
+    new_connection = connection.__dict__.copy()
+    new_connection["tools"] = tools
+
+    # Check if server already exists (to avoid overwriting on Chainlit auto-reconnect)
+    existing_server = get_mcp_server(server_key)
+    if existing_server:
+        logger.info(
+            f"ℹ️ [Main] MCP server '{connection.name}' already in storage, updating (Chainlit auto-reconnect)"
+        )
+
+    add_mcp_server(server_key, new_connection)
+    logger.info(f"✅ [Main] Stored MCP server '{connection.name}' in memory")
+    refresh_prompt_guides()
+    # Refresh tool response handler metadata
+    from utils.tool_response_handler import _tool_response_handler
+
+    _tool_response_handler.refresh_metadata()
+
+    # CRITICAL: Rebuild the graph so it includes the newly added tools
+    # The graph is cached and won't automatically pick up new tools
+    # Add a small delay to let Chainlit finish its session setup before rebuilding
+    logger.info(
+        f"🔄 [Main] Scheduling graph rebuild to include new tools from '{connection.name}'..."
+    )
+
+    # Use asyncio.create_task to run rebuild in background after a short delay
+    # This allows Chainlit to complete its session setup without blocking
+    async def delayed_rebuild():
+        try:
+            # Wait a bit to let Chainlit finish its session operations
+            await asyncio.sleep(0.5)
+            await agent_runtime.rebuild_graph()
+            logger.info(f"✅ [Main] Graph rebuilt for '{connection.name}'.")
+        except Exception as rebuild_error:
+            logger.error(f"❌ [Main] Error rebuilding graph: {rebuild_error}")
+
+    # Store task reference to prevent garbage collection
+    task = asyncio.create_task(delayed_rebuild())
+    # Don't await - let it run in background
+
 
 @cl.on_mcp_disconnect
 async def on_mcp_disconnect(name: str, session: ClientSession):
     """Called when an MCP connection is terminated"""
-    # Remove the disconnected server from config
-    if CONFIG_FILE.exists():
-        with open(CONFIG_FILE, "r") as f:
-            mcp_servers = yaml.safe_load(f)
+    # Remove the disconnected server from in-memory storage
+    no_spaces_name = name.replace(" ", "")
+    remove_mcp_server(no_spaces_name)
 
-        no_spaces_name = name.replace(" ", "")
-        if no_spaces_name in mcp_servers:
-            del mcp_servers[no_spaces_name]
-            with open(CONFIG_FILE, "w") as f:
-                yaml.dump(mcp_servers, f, default_flow_style=False)
+    refresh_prompt_guides()
+    # Refresh tool response handler metadata
+    from utils.tool_response_handler import _tool_response_handler
+
+    _tool_response_handler.refresh_metadata()
+
+    # CRITICAL: Rebuild the graph after removing tools
+    # Run rebuild in background to avoid blocking
+    logger.info(f"🔄 [Main] Scheduling graph rebuild after removing '{name}'...")
+
+    async def delayed_rebuild():
+        try:
+            # Wait a bit to let any cleanup operations complete
+            await asyncio.sleep(0.5)
+            await agent_runtime.rebuild_graph()
+            logger.info(f"✅ [Main] Graph rebuilt after disconnecting '{name}'.")
+        except Exception as rebuild_error:
+            logger.error(f"❌ [Main] Error rebuilding graph: {rebuild_error}")
+
+    # Store task reference to prevent garbage collection
+    task = asyncio.create_task(delayed_rebuild())
+    # Don't await - let it run in background
+
 
 @cl.on_chat_start
 async def on_chat_start():
@@ -97,10 +164,28 @@ async def main(message: cl.Message):
 
     try:
         # 1. Call the Agent
-        result = await graph.ainvoke(
-            {"messages": [HumanMessage(content=message.content)]},
-            config=config,
-        )
+        try:
+            result = await graph.ainvoke(
+                {"messages": [HumanMessage(content=message.content)]},
+                config=config,
+            )
+        except Exception as graph_error:
+            # Log the full error for debugging
+            logger.exception(f"Error during graph execution: {graph_error}")
+            # Check if it's a connection error
+            error_msg = str(graph_error).lower()
+            if (
+                "closedresourceerror" in error_msg
+                or "no running event loop" in error_msg
+            ):
+                await cl.Message(
+                    content=f"⚠️ **Connection Error:** The MCP server connection was interrupted. Please try restarting the MCP servers or try again."
+                ).send()
+                return
+            else:
+                # Re-raise to be caught by outer exception handler
+                raise
+
         response_text = _extract_response(result.get("messages", []))
 
         # 2. Check for Job ID
@@ -218,7 +303,16 @@ async def main(message: cl.Message):
 
     except Exception as e:
         logger.exception("Error in main loop")
-        await cl.Message(content=f"An error occurred: {str(e)}").send()
+        # Provide more detailed error message
+        error_msg = str(e)
+        error_type = type(e).__name__
+        # If it's a connection error, provide helpful context
+        if "ClosedResourceError" in error_type or "no running event loop" in error_msg:
+            await cl.Message(
+                content=f"⚠️ **Connection Error:** The MCP server connection was interrupted. Please try again or restart the MCP servers."
+            ).send()
+        else:
+            await cl.Message(content=f"❌ **Error ({error_type}):** {error_msg}").send()
 
 
 @cl.on_chat_resume
@@ -274,9 +368,71 @@ async def _handle_tool_result(tool_result) -> bool:
 
 
 def _extract_response(messages: list[BaseMessage]) -> str:
+    """
+    Extract the final AI response from messages.
+    Filters out tool call syntax that the LLM might generate as text.
+    """
     for message in reversed(messages):
         if isinstance(message, AIMessage) and message.content:
-            return str(message.content)
+            content = str(message.content)
+
+            # Check if this message has actual tool_calls (proper tool calling)
+            if getattr(message, "tool_calls", None):
+                # If it has tool_calls, the tools should have been executed
+                # Don't show the tool call syntax, wait for the result
+                logger.debug(
+                    f"Message has tool_calls, skipping content: {content[:100]}"
+                )
+                continue
+
+            # Filter out text that looks like function calls (LLM generating code instead of using tools)
+            # This is a generic pattern that works for any tool
+            import re
+
+            content_stripped = content.strip()
+
+            # Pattern 1: Exact function call match: function_name(param="value", param2="value2")
+            # Match: word characters, optional whitespace, opening paren, any content, closing paren, optional whitespace
+            function_call_pattern = r"^\s*\w+\s*\([^)]*\)\s*$"
+            if re.match(function_call_pattern, content_stripped, re.MULTILINE):
+                logger.warning(
+                    f"❌ [Main] LLM generated function call syntax instead of using tools: {content_stripped}"
+                )
+                # Return a helpful message instead of showing the function call
+                return "I need to use the available tools to complete this request. Let me try again."
+
+            # Pattern 2: Function call at the start (even if there's more text after)
+            # This catches cases like "search_code(...) and then some explanation" or "scan_directory(...)\n[...]"
+            if re.match(r"^\s*\w+\s*\([^)]*\)", content_stripped):
+                logger.warning(
+                    f"❌ [Main] LLM generated function call syntax at start of response: {content_stripped[:200]}"
+                )
+                # If there's content after the function call, it might be tool output - extract just the function call part
+                # But for now, just filter the whole thing
+                return "I need to use the available tools to complete this request. Let me try again."
+
+            # Pattern 3: Function call followed by JSON/list output (LLM generated code + tool result mixed)
+            # Catches: "function_name(...)\n[{...}]" or "function_name(...)\n[...]"
+            if re.match(r"^\s*\w+\s*\([^)]*\)\s*\n", content_stripped):
+                logger.warning(
+                    f"❌ [Main] LLM generated function call syntax followed by output: {content_stripped[:300]}"
+                )
+                return "I need to use the available tools to complete this request. Let me try again."
+
+            # Pattern 4: Check for common function call patterns (more lenient)
+            # Catches: function_name(...) with any spacing
+            if re.search(r"\w+\s*\([^)]+\)", content_stripped):
+                # Only flag if it looks like a standalone function call (not part of explanation)
+                # If the content is mostly just a function call, filter it
+                if len(content_stripped) < 200 and re.match(
+                    r"^\s*\w+\s*\([^)]*\)", content_stripped
+                ):
+                    logger.warning(
+                        f"❌ [Main] LLM generated function call syntax (lenient match): {content_stripped}"
+                    )
+                    return "I need to use the available tools to complete this request. Let me try again."
+
+            return content
     return ""
 
 
