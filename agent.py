@@ -257,6 +257,11 @@ class AgentRuntime:
         # Now rebuild
         await self._rebuild_graph()
 
+    def invalidate_graph(self):
+        """Invalidate the graph so it will be rebuilt on next access"""
+        self._graph = None
+        print("🔄 [Agent] Graph invalidated - will be rebuilt on next access")
+
     async def get_graph(self):
         if self._graph is None:
             await self.ensure_ready()
