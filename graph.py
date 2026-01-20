@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 from typing import Iterable, Sequence
 
 from langchain_core.language_models import BaseLanguageModel
@@ -10,9 +9,9 @@ from langchain_core.messages import SystemMessage, AIMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, MessagesState, StateGraph
-from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.prebuilt import ToolNode
 
-from utils.prompt_guides import prompt_guides
+from utils.prompt_guides import prompt_guides, get_prompt_template
 from utils.tool_response_handler import ToolResponseHandler
 
 print(f"\n{prompt_guides}\n")
@@ -52,11 +51,11 @@ def build_graph(
         """
         if len(messages) <= MAX_HISTORY_TURNS * 2:  # Rough estimate: 2 messages per turn
             return messages
-        
+
         # Separate system messages from conversation messages
         system_messages = [msg for msg in messages if getattr(msg, "type", None) == "system"]
         conversation_messages = [msg for msg in messages if getattr(msg, "type", None) != "system"]
-        
+
         # If we have too many messages, keep only the most recent ones
         if len(conversation_messages) > MAX_HISTORY_TURNS * 3:  # Allow for tool messages
             # Keep the most recent messages (last N turns)
@@ -65,14 +64,14 @@ def build_graph(
             truncated = conversation_messages[-(MAX_HISTORY_TURNS * 3):]
             print(f"⚠️ [Graph] Truncated message history from {len(conversation_messages)} to {len(truncated)} messages (keeping last {MAX_HISTORY_TURNS} turns)")
             return system_messages + truncated
-        
+
         return messages
 
     async def query_or_respond(state: MessagesState):
         """Let the model decide whether it needs to call a tool."""
         system_message_content = f"{prompt_guides}"
         history = state.get("messages", [])
-        
+
         # Truncate history if it's too long to prevent "Input is too long" errors
         history = truncate_history(history)
 
@@ -301,15 +300,34 @@ def build_graph(
 
     async def generate(state: MessagesState):
         """Generate the final answer using any newly retrieved context."""
-        
+
         # Truncate history to prevent "Input is too long" errors
         messages = state.get("messages", [])
         messages = truncate_history(messages)
 
         # 1. Capture Tool Outputs
         tool_messages = _gather_recent_tool_messages(messages)
-        print(
-            f"🔍 [Graph] generate() called. Found {len(tool_messages)} tool message(s)"
+        print(f"🔍 [Graph] generate() called. Found {len(tool_messages)} tool message(s)")
+
+        tool_result = []
+        for message in tool_messages:
+            try:
+                # Attempt to parse the content as JSON
+                content = json.loads(message.content[0]["text"])
+
+                if isinstance(content, dict) and "is_final" in content:
+                    if content["is_final"]:
+                        return {"messages": [AIMessage(content=json.dumps(content["result"]))]}
+                    else:
+                        processed_message = ToolMessage(content=[{**message.content[0], "text": content["result"]}], tool_call_id=message.tool_call_id, name=message.name, artifact=message.artifact)
+                        tool_result.append(processed_message)
+                else:
+                    tool_result.append(message)
+            except (json.JSONDecodeError, TypeError, KeyError, IndexError) as e:
+                tool_result.append(message)
+
+        docs_content = "\n\n".join(
+            _stringify_tool_message(msg) for msg in tool_result
         )
 
         # 2. Extract tool output content FIRST (before handler logic)
@@ -398,8 +416,10 @@ def build_graph(
             )
             return {"messages": [AIMessage(content=docs_content)]}
 
+        prompt_template = get_prompt_template("")
+
         system_message_content = (
-            f"{prompt_guides}"
+            f"{prompt_template}"
             f"\n\nCRITICAL INSTRUCTIONS FOR TOOL RESULTS:\n"
             f"- When a tool returns results, display the tool output EXACTLY as returned\n"
             f"- Do NOT add any introductory text like 'The tool found...' or 'Here are the results...'\n"
@@ -407,7 +427,7 @@ def build_graph(
             f"- Do NOT wrap the output in explanatory sentences\n"
             f"- Simply show the raw tool output directly to the user\n"
             f"- The tool output is already formatted and ready to display\n"
-            f"\nCONTEXT FROM TOOLS:\n{docs_content}"
+            f"\nRESULTS FROM TOOLS:\n{docs_content}"
         )
 
         print(f"\n🧠 [Graph] System Prompt:\n{system_message_content}\n")

@@ -1,21 +1,9 @@
 from utils.mcp_storage import get_mcp_servers
 
-
-def _generate_prompt_guides():
-    """Generate prompt guides from in-memory MCP server storage"""
-    mcp_servers = get_mcp_servers()
-
-    config_tools = []
-    for server in mcp_servers.values():
-        config_tools.extend(server.get("tools", []))
-
-    guides = ""
-    for tool in config_tools:
-        guides += f"\n- Use tool `{tool['name']}` for purpose: {tool.get('description', tool['name'])}"
-
+def get_prompt_template(guides: str) -> str:
     return (
-        "You are Wizelit, an Engineering Manager assistant. You have access to the following tools:\n"
-        f"{guides}"
+        "You are Wizelit, an Engineering Manager assistant.\n"
+        f"{guides if guides else ''}"
         "\n\nCRITICAL BEHAVIORAL RULES:\n"
         "1) TOOL USAGE IS PURPOSE-DRIVEN - Only call tools when the user's request matches a tool's purpose (as described in the tool's description above). If the request does NOT match any tool's purpose, respond directly using your knowledge (NO tools).\n"
         "\n"
@@ -53,6 +41,22 @@ def _generate_prompt_guides():
         "\n"
         "Remember: Tools are for working with existing resources. For generating new content, examples, or answering questions, use your knowledge and respond directly WITHOUT tools. NEVER invent tool names - only use tools that are explicitly listed above.\n"
     )
+
+def _generate_prompt_guides():
+    """Generate prompt guides from in-memory MCP server storage"""
+    mcp_servers = get_mcp_servers()
+
+    config_tools = []
+    for server in mcp_servers.values():
+        config_tools.extend(server.get("tools", []))
+
+    guides = ""
+    index = 1
+    for tool in config_tools:
+        guides += f"\n{index}. Use tool `{tool['name']}` for purpose: {tool.get('description', tool['name'])}"
+        index += 1
+
+    return get_prompt_template(f"You are Wizelit, an Engineering Manager assistant. You have access to the following tools:\n{guides}")
 
 
 prompt_guides = _generate_prompt_guides()
