@@ -14,8 +14,6 @@ from langgraph.prebuilt import ToolNode
 from utils.prompt_guides import prompt_guides, get_prompt_template
 from utils.tool_response_handler import ToolResponseHandler
 
-print(f"\n{prompt_guides}\n")
-
 # Initialize tool response handler (module-level singleton)
 _tool_response_handler = ToolResponseHandler()
 
@@ -309,25 +307,8 @@ def build_graph(
         tool_messages = _gather_recent_tool_messages(messages)
         print(f"🔍 [Graph] generate() called. Found {len(tool_messages)} tool message(s)")
 
-        tool_result = []
-        for message in tool_messages:
-            try:
-                # Attempt to parse the content as JSON
-                content = json.loads(message.content[0]["text"])
-
-                if isinstance(content, dict) and "is_final" in content:
-                    if content["is_final"]:
-                        return {"messages": [AIMessage(content=json.dumps(content["result"]))]}
-                    else:
-                        processed_message = ToolMessage(content=[{**message.content[0], "text": content["result"]}], tool_call_id=message.tool_call_id, name=message.name, artifact=message.artifact)
-                        tool_result.append(processed_message)
-                else:
-                    tool_result.append(message)
-            except (json.JSONDecodeError, TypeError, KeyError, IndexError) as e:
-                tool_result.append(message)
-
         docs_content = "\n\n".join(
-            _stringify_tool_message(msg) for msg in tool_result
+            _stringify_tool_message(msg) for msg in tool_messages
         )
 
         # 2. Extract tool output content FIRST (before handler logic)
@@ -427,7 +408,7 @@ def build_graph(
             f"- Do NOT wrap the output in explanatory sentences\n"
             f"- Simply show the raw tool output directly to the user\n"
             f"- The tool output is already formatted and ready to display\n"
-            f"\nRESULTS FROM TOOLS:\n{docs_content}"
+            f"\nRESULTS FROM TOOLS:\n{docs_content if docs_content else '[No tool results]'}"
         )
 
         print(f"\n🧠 [Graph] System Prompt:\n{system_message_content}\n")

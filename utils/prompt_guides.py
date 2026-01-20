@@ -50,13 +50,13 @@ def _generate_prompt_guides():
     for server in mcp_servers.values():
         config_tools.extend(server.get("tools", []))
 
-    guides = ""
-    index = 1
+    guides = "You have access to the following tools:\n"
+    count = 0
     for tool in config_tools:
-        guides += f"\n{index}. Use tool `{tool['name']}` for purpose: {tool.get('description', tool['name'])}"
-        index += 1
+        count += 1
+        guides += f"\n{count}. Use tool `{tool['name']}` for purpose: {tool.get('description', tool['name'])}"
 
-    return get_prompt_template(f"You are Wizelit, an Engineering Manager assistant. You have access to the following tools:\n{guides}")
+    return get_prompt_template(guides if count > 0 else "")
 
 
 prompt_guides = _generate_prompt_guides()
