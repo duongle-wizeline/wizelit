@@ -1,3 +1,0 @@
-mcp
-uvicorn
-crewai==1.7.0

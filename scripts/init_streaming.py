@@ -160,7 +160,9 @@ async def main():
 
     if db_ok:
         print("\n✅ Setup complete! You can now:")
-        print("   1. Start the refactoring agent: python mcp_servers/refactoring-agent/main.py")
+        print("   1. Start the MCP servers from sample-mcp-servers:")
+        print("      - python mcp_servers/refactoring-agent/main.py")
+        print("      - python mcp_servers/code-scout/server.py")
         print("   2. Start the hub: chainlit run main.py")
         print("   3. Submit a refactoring job and watch real-time logs!")
 
