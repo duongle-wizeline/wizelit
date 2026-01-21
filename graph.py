@@ -221,68 +221,6 @@ def build_graph(
             invalid_tool_calls = []
             valid_tool_calls = []
 
-            # Check user's request intent: Does user want to search/explore vs modify existing content?
-            user_request_lower = ""
-            user_provided_content = False
-            user_provided_reference = False
-            is_search_analysis_request = False
-
-            if history:
-                last_message = history[-1]
-                if hasattr(last_message, "content") and last_message.content:
-                    user_request_lower = str(last_message.content).lower()
-                    # Check if user provided actual content/text (not just a reference)
-                    # References: URLs, paths, repository links
-                    # Content: actual text, code blocks, data snippets
-                    user_provided_reference = any(
-                        indicator in user_request_lower
-                        for indicator in [
-                            "http://",
-                            "https://",
-                            "github.com",
-                            "file://",
-                            "path:",
-                            "directory:",
-                        ]
-                    )
-                    # Check if user provided actual content (code blocks, quoted text, etc.)
-                    user_provided_content = (
-                        any(
-                            indicator in user_request_lower
-                            for indicator in [
-                                "```",
-                                '"""',
-                                "'''",
-                                "here is",
-                                "here's",
-                                "this is",
-                                "below is",
-                                "code:",
-                                "code snippet:",
-                            ]
-                        )
-                        or len(user_request_lower.split("\n")) > 3
-                    )  # Multi-line likely means content
-
-                    # Check if this is a search/analysis request
-                    search_analysis_keywords = [
-                        "find",
-                        "search",
-                        "analyze",
-                        "inspect",
-                        "explore",
-                        "usage",
-                        "usages",
-                        "where is",
-                        "where are",
-                        "locate",
-                        "discover",
-                    ]
-                    is_search_analysis_request = any(
-                        keyword in user_request_lower
-                        for keyword in search_analysis_keywords
-                    )
-
             for tc in response.tool_calls:
                 tool_name = tc.get("name")
                 if tool_name not in valid_tool_names:
@@ -291,89 +229,20 @@ def build_graph(
                         f"❌ [Graph] LLM tried to call invalid tool '{tool_name}'. Valid tools: {list(valid_tool_names)}"
                     )
                 else:
-                    # Additional validation: Check if tool requires actual content vs can work with references
-                    tool_obj = next((t for t in tool_list if t.name == tool_name), None)
-                    if tool_obj:
-                        tool_desc_lower = (tool_obj.description or "").lower()
-                        # Generic check: Does tool description indicate it requires actual content/text?
-                        # Look for patterns like "requires", "must provide", "user provides", "actual", "snippet"
-                        requires_content = any(
-                            pattern in tool_desc_lower
-                            for pattern in [
-                                "requires the user to provide",
-                                "requires actual",
-                                "user must provide",
-                                "user provides",
-                                "actual content",
-                                "actual text",
-                                "snippet",
-                                "provided as text",
-                                "provided as content",
-                                "code_snippet",  # Parameter name
-                            ]
-                        )
-
-                        # Check if tool is for modification/refactoring (not search/analysis)
-                        is_modification_tool = any(
-                            pattern in tool_desc_lower
-                            for pattern in [
-                                "refactor",
-                                "modify",
-                                "improve",
-                                "change",
-                                "update",
-                            ]
-                        )
-
-                        # Validation 1: If tool requires actual content but user only provided a reference, reject
-                        if (
-                            requires_content
-                            and user_provided_reference
-                            and not user_provided_content
-                        ):
-                            print(
-                                f"❌ [Graph] Tool '{tool_name}' requires actual content/text, but user only provided a reference (URL/path). Rejecting."
-                            )
-                            invalid_tool_calls.append(tool_name)
-                            continue
-
-                        # Validation 2: If user wants to search/analyze but tool is for modification, reject
-                        if is_search_analysis_request and is_modification_tool:
-                            print(
-                                f"❌ [Graph] User wants to search/analyze, but tool '{tool_name}' is for modification. Rejecting."
-                            )
-                            invalid_tool_calls.append(tool_name)
-                            continue
-
                     valid_tool_calls.append(tc)
 
-            # Only return error if ALL tool calls are invalid (no valid ones)
-            # If there are some valid tool calls, proceed with those and filter out invalid ones
-            if invalid_tool_calls and not valid_tool_calls:
+            # If there are invalid tool calls, return a message prompting direct response
+            if invalid_tool_calls:
                 print(
-                    f"⚠️ [Graph] All tool calls are invalid: {invalid_tool_calls}. Prompting LLM to respond directly."
+                    f"⚠️ [Graph] Invalid tool calls detected: {invalid_tool_calls}. Prompting LLM to respond directly."
                 )
-                # Provide more specific error message based on request type
-                if is_search_analysis_request:
-                    error_message = "I cannot search, find, or analyze without the appropriate tool. The available tools are not designed for searching or analyzing - they require you to provide the actual content to work with."
-                elif user_provided_reference and not user_provided_content:
-                    error_message = "I cannot refactor or modify code without the actual code snippet. Please provide the code you want me to refactor, not just a URL or path."
-                else:
-                    error_message = "I cannot use tools for this request. Let me respond directly using my knowledge instead."
-
                 return {
                     "messages": [
-                        AIMessage(content=error_message)
+                        AIMessage(
+                            content="I cannot use tools for this request. Let me respond directly using my knowledge instead."
+                        )
                     ]
                 }
-            
-            # If there are invalid tool calls but also valid ones, log warning but proceed with valid ones
-            if invalid_tool_calls and valid_tool_calls:
-                print(
-                    f"⚠️ [Graph] Some tool calls are invalid: {invalid_tool_calls}. Proceeding with valid ones: {[tc.get('name') for tc in valid_tool_calls]}"
-                )
-                # Filter response to only include valid tool calls
-                response.tool_calls = valid_tool_calls
 
             # Only log if all tool calls are valid
             if valid_tool_calls:
