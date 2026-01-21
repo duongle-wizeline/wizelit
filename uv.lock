@@ -4985,13 +4985,13 @@ requires-dist = [
     { name = "pygithub", specifier = ">=2.4.0" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
     { name = "requests", specifier = ">=2.32.3" },
-    { name = "wizelit-sdk", git = "ssh://git@github.com/duongle-wizeline/wizelit-sdk.git?rev=v0.1.21" },
+    { name = "wizelit-sdk", git = "ssh://git@github.com/duongle-wizeline/wizelit-sdk.git?rev=v0.1.22" },
 ]
 
 [[package]]
 name = "wizelit-sdk"
 version = "0.1.21"
-source = { git = "ssh://git@github.com/duongle-wizeline/wizelit-sdk.git?rev=v0.1.21#d57dd4548faf4914f59b9ff96ef35c95e4b973c3" }
+source = { git = "ssh://git@github.com/duongle-wizeline/wizelit-sdk.git?rev=v0.1.22#c659b977bab969b353d963a33bb21f98510ab855" }
 dependencies = [
     { name = "asyncpg" },
     { name = "fastmcp" },
