@@ -7,9 +7,11 @@ load_dotenv()
 
 import asyncio
 from contextlib import AsyncExitStack, suppress
+import subprocess
 from langchain_aws import ChatBedrock
 from mcp.client.session import ClientSession
 from mcp.client.sse import sse_client
+from mcp.client.streamable_http import streamablehttp_client
 from langchain_mcp_adapters.tools import load_mcp_tools
 from graph import build_graph
 from utils.bedrock_config import normalize_aws_env, resolve_bedrock_model_id
@@ -135,6 +137,42 @@ class AgentRuntime:
 
         async def connect_and_load(label: str, url: str):
             print(f"🔌 [Agent] Connecting to {label} at {url} ...")
+
+            # Check if this is a streamable-http server
+            if "1340" in url or "HTTP" in label.upper():
+                print(f"ℹ️  [Agent] Using streamable-http transport for {label}")
+
+                # Use streamable-http client for Schema Validator
+                streamable_http = await self._exit_stack.enter_async_context(
+                    streamablehttp_client(url=url)
+                )
+                read_stream, write_stream, get_session_id = streamable_http
+                session = await self._exit_stack.enter_async_context(
+                    ClientSession(read_stream, write_stream)
+                )
+                await session.initialize()
+                tools = await load_mcp_tools(session)
+                if not tools:
+                    raise RuntimeError(f"❌ Connected to {url}, but found 0 tools!")
+                print(
+                    f"✅ [Agent] Tools Loaded from {label}: {[t.name for t in tools]}"
+                )
+
+                # Add tools, skipping duplicates
+                for t in tools:
+                    if t.name in seen_tool_names:
+                        print(
+                            f"⚠️ [Agent] Duplicate tool name '{t.name}' from {label}. Skipping duplicate."
+                        )
+                        continue
+                    seen_tool_names.add(t.name)
+                    tools_all.append(t)
+                    self._tool_sessions[t.name] = session
+
+                self._sessions[label] = session
+                return
+
+            # Standard SSE connection for other servers
             sse = await self._exit_stack.enter_async_context(
                 sse_client(url=url, timeout=600.0)
             )
@@ -163,12 +201,56 @@ class AgentRuntime:
             # Keep session for potential future use
             self._sessions[label] = session
 
+        async def load_from_chainlit_session(label: str, chainlit_session):
+            """Load tools from a Chainlit-managed session (for stdio-based servers)"""
+            print(
+                f"🔌 [Agent] Loading {label} from Chainlit session (stdio transport) ..."
+            )
+            try:
+                tools = await load_mcp_tools(chainlit_session)
+                if not tools:
+                    raise RuntimeError(
+                        f"❌ Found 0 tools from Chainlit session for {label}!"
+                    )
+                print(
+                    f"✅ [Agent] Tools Loaded from {label}: {[t.name for t in tools]}"
+                )
+
+                # Add tools, skipping duplicates
+                for t in tools:
+                    if t.name in seen_tool_names:
+                        print(
+                            f"⚠️ [Agent] Duplicate tool name '{t.name}' from {label}. Skipping duplicate."
+                        )
+                        continue
+                    seen_tool_names.add(t.name)
+                    tools_all.append(t)
+                    self._tool_sessions[t.name] = chainlit_session
+
+                self._sessions[label] = chainlit_session
+                return
+            except Exception as e:
+                raise RuntimeError(f"❌ Failed to load tools from {label}: {e}")
+
         try:
             # Get MCP servers from in-memory storage
             mcp_servers = get_mcp_servers()
 
             for server in mcp_servers.values():
-                await connect_and_load(server["name"], server["url"])
+                # Check if this server has a Chainlit session (stdio-based servers like Code Formatter)
+                if "chainlit_session" in server and server["chainlit_session"]:
+                    await load_from_chainlit_session(
+                        server["name"], server["chainlit_session"]
+                    )
+                elif "url" in server:
+                    # Standard URL-based connection (SSE or streamable-http)
+                    await connect_and_load(server["name"], server["url"])
+                else:
+                    # Server has no URL and no Chainlit session
+                    # This means it's not properly configured - skip it
+                    print(
+                        f"⚠️  [Agent] Skipping {server.get('name', 'unknown')} - no URL or Chainlit session. Please add this server via Chainlit UI."
+                    )
 
             # Bedrock LLM
             region = normalize_aws_env(default_region="us-east-1")
