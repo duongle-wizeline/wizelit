@@ -138,11 +138,16 @@ class AgentRuntime:
         async def connect_and_load(label: str, url: str):
             print(f"🔌 [Agent] Connecting to {label} at {url} ...")
 
-            # Check if this is a streamable-http server
-            if "1340" in url or "HTTP" in label.upper():
+            # Detect transport type based on URL path
+            # Streamable-HTTP servers use /mcp endpoint, SSE servers use /sse endpoint
+            is_streamable_http = "/mcp" in url or url.endswith("/mcp")
+            is_sse = "/sse" in url or url.endswith("/sse")
+
+            # Use streamable-http transport if URL indicates it
+            if is_streamable_http:
                 print(f"ℹ️  [Agent] Using streamable-http transport for {label}")
 
-                # Use streamable-http client for Schema Validator
+                # Use streamable-http client
                 streamable_http = await self._exit_stack.enter_async_context(
                     streamablehttp_client(url=url)
                 )
@@ -172,7 +177,9 @@ class AgentRuntime:
                 self._sessions[label] = session
                 return
 
-            # Standard SSE connection for other servers
+            # Default to SSE connection for other servers
+            if not is_sse:
+                print(f"ℹ️  [Agent] Using SSE transport for {label} (default)")
             sse = await self._exit_stack.enter_async_context(
                 sse_client(url=url, timeout=600.0)
             )
