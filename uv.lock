@@ -4985,19 +4985,23 @@ requires-dist = [
     { name = "pygithub", specifier = ">=2.4.0" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
     { name = "requests", specifier = ">=2.32.3" },
-    { name = "wizelit-sdk", git = "ssh://git@github.com/duongle-wizeline/wizelit-sdk.git?rev=v0.1.22" },
+    { name = "wizelit-sdk", specifier = ">=0.1.23" },
 ]
 
 [[package]]
 name = "wizelit-sdk"
-version = "0.1.21"
-source = { git = "ssh://git@github.com/duongle-wizeline/wizelit-sdk.git?rev=v0.1.22#c659b977bab969b353d963a33bb21f98510ab855" }
+version = "0.1.23"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "asyncpg" },
     { name = "fastmcp" },
     { name = "redis" },
     { name = "sqlalchemy" },
     { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/75/b5/daad833d380b46578dd7c3ed0c4391b9fe7bb2c4114e2a8bdb98b67be37c/wizelit_sdk-0.1.23.tar.gz", hash = "sha256:79bde3c2b9626a560323267eb43f191aaa40d53b63a8101b3e299facb75da4e1", size = 138339, upload-time = "2026-01-22T15:50:29.781Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/38/7c/845069bbbcedc5474a56b07ce83215a2f2f4826c7b4bb6836968c689ed1b/wizelit_sdk-0.1.23-py3-none-any.whl", hash = "sha256:e302951e2f54c94944134c8617a4e6016312cabac50e0dac087d89d0e04fc860", size = 18576, upload-time = "2026-01-22T15:50:26.63Z" },
 ]
 
 [[package]]
