@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 import logging
 import os
+import threading
 
 from models import BaseModel
 
@@ -25,11 +26,15 @@ class DatabaseManager:
     ECHO_SQL: bool = False
 
     _instance = None
+    _lock = threading.Lock()
 
     def __new__(cls):
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialized = False
+            with cls._lock:
+                # Double-check pattern to ensure thread safety
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
         return cls._instance
 
     def __init__(self):

@@ -56,37 +56,26 @@ The Chainlit agent expects an MCP server that exposes its tools over HTTP:
 - Configure with the `MCP_SERVER_URL` environment variable
 - Optional timeout override: `MCP_HTTP_TIMEOUT` (seconds)
 
-To run the reference server included in this repo:
+MCP servers are now hosted in the separate [`sample-mcp-servers`](https://github.com/your-org/sample-mcp-servers) repository:
 
-```
-cd mcp_servers/fastmcp-http-server
-fastmcp run main.py:mcp --transport http --port 1337
-```
+## Available MCP Servers
 
-Once the server is running, Chainlit will automatically discover the available MCP tools and expose them to the internal LLM.
-
-# MCP Servers
-
-This repository includes two separate MCP servers:
-
-## 1. Code Scout MCP Server
+### 1. Code Scout MCP Server
 
 Fast synchronous symbol scanner for Python codebases.
 
-- Location: `mcp_servers/code-scout/`
-- Start: `python mcp_servers/code-scout/server.py`
+- Repository: `sample-mcp-servers/mcp_servers/code-scout/`
 - Tools: scan_directory, find_symbol, analyze_impact, grep_search, git_blame, build_dependency_graph
 - Supports local paths and GitHub URLs
 - Set `GITHUB_TOKEN` for private repositories
 
-## 2. Refactoring Agent MCP Server
+### 2. Refactoring Agent MCP Server
 
 AI-powered code refactoring using CrewAI and AWS Bedrock with **real-time log streaming**.
 
-- Location: `mcp_servers/refactoring-agent/`
-- Start: `python mcp_servers/refactoring-agent/main.py`
+- Repository: `sample-mcp-servers/mcp_servers/refactoring-agent/`
 - Tools: start_refactoring_job, get_job_status
 - Requires AWS credentials with Bedrock access
-- **NEW**: Real-time progress via Redis Pub/Sub + PostgreSQL persistence
+- **Feature**: Real-time progress via Redis Pub/Sub + PostgreSQL persistence
 
-See [mcp_servers/README.md](mcp_servers/README.md) for detailed documentation.
+See the [`sample-mcp-servers` README](https://github.com/your-org/sample-mcp-servers/blob/main/README.md) for detailed setup and usage instructions.
