@@ -4,7 +4,7 @@ Generic tool response handler based on metadata from agent code.
 This module provides a metadata-driven approach to handling tool responses,
 eliminating the need for hardcoded tool-specific logic in graph.py.
 
-Metadata is defined in agent code via WizelitAgentWrapper's @mcp.ingest()
+Metadata is defined in agent code via WizelitAgent's @mcp.ingest()
 decorator and exposed via MCP protocol's meta field.
 """
 
