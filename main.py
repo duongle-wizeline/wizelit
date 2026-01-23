@@ -144,6 +144,9 @@ async def on_mcp(connection, session: ClientSession):
     # Store server metadata in memory (replaces agents.yaml)
     new_connection = connection.__dict__.copy()
     new_connection["tools"] = tools
+    # CRITICAL: For stdio-based servers (like Code Formatter), store the Chainlit session
+    # so agent.py can reuse it instead of trying to reconnect
+    new_connection["chainlit_session"] = session
 
     # Check if server already exists (to avoid overwriting on Chainlit auto-reconnect)
     existing_server = get_mcp_server(server_key)

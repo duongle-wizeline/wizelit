@@ -4985,7 +4985,7 @@ requires-dist = [
     { name = "pygithub", specifier = ">=2.4.0" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
     { name = "requests", specifier = ">=2.32.3" },
-    { name = "wizelit-sdk", specifier = ">=0.1.24" },
+    { name = "wizelit-sdk", specifier = ">=0.1.24" }
 ]
 
 [[package]]
