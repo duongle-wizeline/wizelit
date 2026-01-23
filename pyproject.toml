@@ -15,11 +15,11 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "langchain-mcp-adapters>=0.2.1",
     "plotly>=5.24.1",
-    "wizelit-sdk>=0.1.25",
+    "wizelit-sdk>=0.1.26",
 ]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["models*", "utils*"]
-exclude = ["data*", "public*", "dzun-local*", "__pycache__*"]
+exclude = ["data*", "public*", "__pycache__*"]
 
