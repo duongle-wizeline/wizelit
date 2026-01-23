@@ -4985,12 +4985,12 @@ requires-dist = [
     { name = "pygithub", specifier = ">=2.4.0" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
     { name = "requests", specifier = ">=2.32.3" },
-    { name = "wizelit-sdk", specifier = ">=0.1.23" },
+    { name = "wizelit-sdk", specifier = ">=0.1.24" },
 ]
 
 [[package]]
 name = "wizelit-sdk"
-version = "0.1.23"
+version = "0.1.24"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "asyncpg" },
@@ -4999,9 +4999,9 @@ dependencies = [
     { name = "sqlalchemy" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/75/b5/daad833d380b46578dd7c3ed0c4391b9fe7bb2c4114e2a8bdb98b67be37c/wizelit_sdk-0.1.23.tar.gz", hash = "sha256:79bde3c2b9626a560323267eb43f191aaa40d53b63a8101b3e299facb75da4e1", size = 138339, upload-time = "2026-01-22T15:50:29.781Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/45/5e/9a48128ec7ef79bd78aac6d4e8b1db64ad62f2b65f1a3b7e1e15fe072e4e/wizelit_sdk-0.1.24.tar.gz", hash = "sha256:02d449ce9287deb04dd25fc0d813f303a91d2ee59d6f511555e97f7fcf16d803", size = 138335, upload-time = "2026-01-23T03:21:31.508Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/38/7c/845069bbbcedc5474a56b07ce83215a2f2f4826c7b4bb6836968c689ed1b/wizelit_sdk-0.1.23-py3-none-any.whl", hash = "sha256:e302951e2f54c94944134c8617a4e6016312cabac50e0dac087d89d0e04fc860", size = 18576, upload-time = "2026-01-22T15:50:26.63Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/26/fd163d4b483e0930a453512da8a1b193191931dfe622170467744b1be52d/wizelit_sdk-0.1.24-py3-none-any.whl", hash = "sha256:8f0bb90c30f0bee52da48976d99ea282855e6438116d9bc5dca6d103e4b6b28d", size = 18562, upload-time = "2026-01-23T03:21:28.556Z" },
 ]
 
 [[package]]

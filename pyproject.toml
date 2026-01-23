@@ -18,7 +18,7 @@ dependencies = [
     "langchain-mcp-adapters>=0.2.1",
     "crewai>=1.6.1",
     "plotly>=5.24.1",
-    "wizelit-sdk>=0.1.23"
+    "wizelit-sdk>=0.1.24"
 ]
 
 [tool.setuptools.packages.find]
