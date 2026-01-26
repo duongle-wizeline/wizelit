@@ -1,4 +1,5 @@
 from typing import List
+import os
 
 class AppConfig:
     """
@@ -34,6 +35,20 @@ class AppConfig:
             "gemma2-9b-it",
         ],
     }
+
+    def __init__(self, default_provider: str = None, default_model: str = None):
+        """
+        Initialize AppConfig with optional defaults.
+
+        Args:
+            default_provider: Default LLM provider (from env or 'anthropic')
+            default_model: Default model name (from env or provider's first model)
+        """
+        self.default_provider = default_provider or os.getenv("DEFAULT_PROVIDER", "anthropic")
+        self.default_model = default_model or os.getenv(
+            "DEFAULT_MODEL",
+            self.MODELS.get(self.default_provider, [])[0] if self.MODELS.get(self.default_provider) else "claude-sonnet-4-5-20250929"
+        )
 
     def get_available_models(self, provider: str) -> List[str]:
         """

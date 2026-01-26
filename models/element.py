@@ -16,11 +16,11 @@ class Element(BaseModel):
     display = Column(Text)
     objectKey = Column(Text)
     size = Column(Text)
-    page = Column(Integer)
+    page = Column(Integer, default=0)
     language = Column(Text)
     forId = Column(UUID(as_uuid=True))
     mime = Column(Text)
-    props = Column(JSONB)
+    props = Column(JSONB, default=dict)
 
     # Relationships
     thread = relationship("Thread", back_populates="elements")
