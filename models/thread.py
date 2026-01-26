@@ -2,18 +2,18 @@ from sqlalchemy import Column, Text, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ARRAY
 from sqlalchemy.orm import relationship
 
-from models.base import BaseModel
+from models.base import BaseModel, TimestampMixin
 
 
 class Thread(BaseModel):
     __tablename__ = 'threads'
 
-    createdAt = Column(Text)
+    createdAt = Column(Text, default=TimestampMixin.get_timestamp)
     name = Column(Text)
     userId = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'))
     userIdentifier = Column(Text)
-    tags = Column(ARRAY(Text))
-    meta_data = Column('metadata', JSONB)
+    tags = Column(ARRAY(Text), default=list)
+    meta_data = Column('metadata', JSONB, default=dict)
 
     # Relationships
     user = relationship("User", back_populates="threads")
