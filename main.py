@@ -6,7 +6,7 @@ import uuid
 import asyncio
 import time
 import re
-from typing import Dict, Optional
+from typing import Any, Dict, Optional, cast
 from pathlib import Path
 from mcp import ClientSession
 
@@ -14,6 +14,7 @@ import chainlit as cl
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 from chainlit.types import ThreadDict
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
 
 from agent import agent_runtime
 from database import DatabaseManager
@@ -234,7 +235,13 @@ async def on_chat_start():
 async def main(message: cl.Message):
     session_id = cl.user_session.get("session_id")
     graph = await agent_runtime.get_graph()
-    config = {"configurable": {"thread_id": session_id}}
+    if graph is None:
+        await cl.Message(
+            content="⚠️ **Connection Error:** The agent graph is unavailable. Please try again."
+        ).send()
+        return
+
+    config = cast(RunnableConfig, {"configurable": {"thread_id": session_id}})
 
     try:
         # 1. Call the Agent
@@ -397,8 +404,12 @@ async def on_chat_resume(thread: ThreadDict):
 
 
 @cl.oauth_callback
-def oauth_callback(
-    provider_id: str, token: str, raw_user_data: Dict[str, str], default_user: cl.User
+async def oauth_callback(
+    provider_id: str,
+    token: str,
+    raw_user_data: Dict[str, str],
+    default_user: cl.User,
+    context: Optional[str] = None,
 ) -> Optional[cl.User]:
     if provider_id == "google" and raw_user_data["hd"] == "wizeline.com":
         return default_user
