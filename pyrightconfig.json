@@ -1,0 +1,12 @@
+{
+  "typeCheckingMode": "standard",
+  "pythonVersion": "3.12",
+  "include": ["**/*.py"],
+  "exclude": [
+    "**/.venv",
+    "**/__pycache__",
+    "wizelit.egg-info",
+    "data",
+    "public"
+  ]
+}
