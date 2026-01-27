@@ -3598,6 +3598,18 @@ wheels = [
 ]
 
 [[package]]
+name = "typeguard"
+version = "4.4.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c7/68/71c1a15b5f65f40e91b65da23b8224dad41349894535a97f63a52e462196/typeguard-4.4.4.tar.gz", hash = "sha256:3a7fd2dffb705d4d0efaed4306a704c89b9dee850b688f060a8b1615a79e5f74", size = 75203, upload-time = "2025-06-18T09:56:07.624Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1b/a9/e3aee762739c1d7528da1c3e06d518503f8b6c439c35549b53735ba52ead/typeguard-4.4.4-py3-none-any.whl", hash = "sha256:b5f562281b6bfa1f5492470464730ef001646128b180769880468bd84b68b09e", size = 34874, upload-time = "2025-06-18T09:56:05.999Z" },
+]
+
+[[package]]
 name = "typer"
 version = "0.20.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3785,6 +3797,7 @@ dependencies = [
     { name = "mcp" },
     { name = "plotly" },
     { name = "python-dotenv" },
+    { name = "typeguard" },
     { name = "wizelit-sdk" },
 ]
 
@@ -3800,23 +3813,25 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.23.3" },
     { name = "plotly", specifier = ">=5.24.1" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
-    { name = "wizelit-sdk", specifier = ">=0.1.26" },
+    { name = "typeguard", specifier = ">=4.3.0" },
+    { name = "wizelit-sdk", specifier = ">=0.1.29" },
 ]
 
 [[package]]
 name = "wizelit-sdk"
-version = "0.1.26"
+version = "0.1.29"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "asyncpg" },
     { name = "fastmcp" },
     { name = "redis" },
     { name = "sqlalchemy" },
+    { name = "typeguard" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/95/fc/c58a5ded02e7aadf985775a95554d7ca549e9e4c8ea1ffd98b79402a4d12/wizelit_sdk-0.1.26.tar.gz", hash = "sha256:23cb2e80be54b0de38c50340bed194e7fb889b389aa771838e51234d14a0ebc9", size = 138391, upload-time = "2026-01-23T10:39:12.073Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/47/a3/edf9ef5277138b4177a0a4c80a6765c958f491abfb0cded8a12d13398698/wizelit_sdk-0.1.29.tar.gz", hash = "sha256:1f0a05e4fff6e9f3678eb9b4340e49c8ed27258b7e7649d9f0684c2fe2479bf2", size = 140217, upload-time = "2026-01-27T05:48:01.676Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e9/2e/b5e0eb4fb2e99909354d69b1de2078b4ed27d1253daaa2c58ca0085c3603/wizelit_sdk-0.1.26-py3-none-any.whl", hash = "sha256:c20224b75ec335e629a38d9374eef3036bc221d654c7fb3fbf6286b914422bc1", size = 18315, upload-time = "2026-01-23T10:39:09.937Z" },
+    { url = "https://files.pythonhosted.org/packages/b3/20/0c77c98302d8d7eb410dee6e42e3953cbbbe752ce5d980d5d45508cc1f17/wizelit_sdk-0.1.29-py3-none-any.whl", hash = "sha256:ffe6dddfa80886c8479e1841edcf22670ea474660927dee8c64f813a86a4f4e3", size = 20090, upload-time = "2026-01-27T05:47:59.652Z" },
 ]
 
 [[package]]
