@@ -1,4 +1,5 @@
 from utils.mcp_storage import get_mcp_servers
+from typing import Dict, Any
 
 def get_prompt_template(guides: str) -> str:
     return (
@@ -42,7 +43,7 @@ def get_prompt_template(guides: str) -> str:
         "Remember: Tools are for working with existing resources. For generating new content, examples, or answering questions, use your knowledge and respond directly WITHOUT tools. NEVER invent tool names - only use tools that are explicitly listed above.\n"
     )
 
-def _generate_prompt_guides():
+def _generate_prompt_guides() -> str:
     """Generate prompt guides from in-memory MCP server storage"""
     mcp_servers = get_mcp_servers()
 
@@ -62,7 +63,7 @@ def _generate_prompt_guides():
 prompt_guides = _generate_prompt_guides()
 
 
-def refresh_prompt_guides():
+def refresh_prompt_guides() -> None:
     """Refresh the global prompt guides variable."""
     global prompt_guides
     prompt_guides = _generate_prompt_guides()

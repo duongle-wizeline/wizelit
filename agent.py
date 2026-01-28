@@ -1,6 +1,7 @@
 import os
 import sys
 import warnings
+from typing import Any, Dict
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -35,11 +36,11 @@ _original_stderr = sys.stderr
 class FilteredStderr:
     """Filter stderr to suppress non-critical async generator cleanup messages"""
 
-    def __init__(self, original_stderr):
+    def __init__(self, original_stderr: Any) -> None:
         self.original_stderr = original_stderr
         self._buffer = ""  # Buffer for multi-line messages
 
-    def write(self, text):
+    def write(self, text: str) -> None:
         # Buffer text to handle multi-line exception messages
         self._buffer += text
 
@@ -55,7 +56,7 @@ class FilteredStderr:
                 self.original_stderr.write(line + "\n")
         # If no newline, keep buffering (will be flushed later)
 
-    def _should_suppress(self, line):
+    def _should_suppress(self, line: str) -> bool:
         """Check if a line should be suppressed"""
         # Suppress "Exception ignored" messages related to async generators
         if "Exception ignored in:" in line and "async_generator" in line:
@@ -86,7 +87,7 @@ class FilteredStderr:
             return True
         return False
 
-    def flush(self):
+    def flush(self) -> None:
         # Write any remaining buffered content
         if self._buffer:
             if not self._should_suppress(self._buffer):
@@ -94,7 +95,7 @@ class FilteredStderr:
             self._buffer = ""
         self.original_stderr.flush()
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Any:
         return getattr(self.original_stderr, name)
 
 
@@ -104,18 +105,18 @@ if not isinstance(sys.stderr, FilteredStderr):
 
 
 class AgentRuntime:
-    def __init__(self):
+    def __init__(self) -> None:
         self._graph = None
         self._exit_stack = AsyncExitStack()
         self._sessions = {}
         self._tool_sessions = {}
 
-    async def ensure_ready(self):
+    async def ensure_ready(self) -> None:
         if self._graph is not None:
             return
         await self._rebuild_graph()
 
-    async def _rebuild_graph(self):
+    async def _rebuild_graph(self) -> None:
         """Rebuild the graph with current tools from in-memory storage"""
         # Only rebuild if graph doesn't exist yet
         # If graph exists, we should not rebuild it here - use rebuild_graph() explicitly
@@ -276,13 +277,13 @@ class AgentRuntime:
             await self._exit_stack.aclose()
             raise e
 
-    async def rebuild_graph(self):
+    async def rebuild_graph(self) -> None:
         """Public method to force graph rebuild (e.g., after MCP servers are added/removed)"""
         # Use lock to prevent concurrent rebuilds
         async with _rebuild_lock:
             await self._do_rebuild_graph()
 
-    async def _do_rebuild_graph(self):
+    async def _do_rebuild_graph(self) -> None:
         """Internal method that performs the actual rebuild"""
         # Close existing MCP connections if any (but not database connections)
         if self._graph is not None:
@@ -346,12 +347,12 @@ class AgentRuntime:
         # Now rebuild
         await self._rebuild_graph()
 
-    def invalidate_graph(self):
+    def invalidate_graph(self) -> None:
         """Invalidate the graph so it will be rebuilt on next access"""
         self._graph = None
         print("🔄 [Agent] Graph invalidated - will be rebuilt on next access")
 
-    async def get_graph(self):
+    async def get_graph(self) -> Any:
         if self._graph is None:
             await self.ensure_ready()
         return self._graph
@@ -362,7 +363,7 @@ class AgentRuntime:
         return computed_graph.get_graph().draw_mermaid()
 
     # Allow calling tools directly (for polling)
-    async def call_tool(self, name: str, arguments: dict):
+    async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         if not self._tool_sessions:
             await self.ensure_ready()
         session = self._tool_sessions.get(name)
