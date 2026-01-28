@@ -71,7 +71,7 @@ class DatabaseManager:
         self._initialized = True
         logger.info("Database manager initialized")
 
-    async def init_db(self, drop_existing: bool = False):
+    async def init_db(self, drop_existing: bool = False) -> None:
         """
         Initialize database tables.
 
@@ -129,7 +129,7 @@ class DatabaseManager:
         finally:
             await session.close()
 
-    async def close(self):
+    async def close(self) -> None:
         """Dispose of the engine and close all connections."""
         await self.engine.dispose()
         logger.info("Database connections closed")

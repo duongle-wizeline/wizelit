@@ -1,4 +1,3 @@
-from typing import List
 import os
 
 class AppConfig:
@@ -50,7 +49,7 @@ class AppConfig:
             self.MODELS.get(self.default_provider, [])[0] if self.MODELS.get(self.default_provider) else "claude-sonnet-4-5-20250929"
         )
 
-    def get_available_models(self, provider: str) -> List[str]:
+    def get_available_models(self, provider: str) -> list[str]:
         """
         Get available models for a provider.
 
