@@ -42,28 +42,40 @@ def build_graph(
     llm_with_tools = llm.bind_tools(tool_list) if tool_list else llm
     memory = MemorySaver()
 
-    def truncate_history(messages: list) -> list:
-        """
-        Truncate message history to keep only the most recent conversation turns.
-        Preserves system messages and the last N conversation turns.
-        """
-        if len(messages) <= MAX_HISTORY_TURNS * 2:  # Rough estimate: 2 messages per turn
-            return messages
+    async def analyze_task(state: MessagesState):
+        """Classify whether the user request is a generation or tool usage task."""
+        tools_description = json.dumps([{
+            "name": t.name,
+            "description": t.description,
+        } for t in tool_list])
 
-        # Separate system messages from conversation messages
-        system_messages = [msg for msg in messages if getattr(msg, "type", None) == "system"]
-        conversation_messages = [msg for msg in messages if getattr(msg, "type", None) != "system"]
+        system_message_content = f"You are Wizelit, an Engineering Manager assistant.\nYou have this list of tools available:\n{tools_description}\n\nYour job is to determine if the user's request is a single task or multiple tasks, and each task requires using a tool or can be answered directly. Return a list of tasks with \"description\" and \"requires_tool\" field. Respond in JSON format only. Example:\n{json.dumps([
+            {
+                "description": "search for 'async def' in https://github.com/duongle-wizeline/wizelit",
+                "requires_tool": "grep_search"
+            },
+            {
+                "description": "find usage of verify_environment in https://github.com/duongle-wizeline/wizelit",
+                "requires_tool": "find_symbol"
+            }
+        ])}"
 
-        # If we have too many messages, keep only the most recent ones
-        if len(conversation_messages) > MAX_HISTORY_TURNS * 3:  # Allow for tool messages
-            # Keep the most recent messages (last N turns)
-            # A turn typically includes: human, ai, and possibly tool messages
-            # We'll keep the last MAX_HISTORY_TURNS * 3 messages to account for tool calls
-            truncated = conversation_messages[-(MAX_HISTORY_TURNS * 3):]
-            print(f"⚠️ [Graph] Truncated message history from {len(conversation_messages)} to {len(truncated)} messages (keeping last {MAX_HISTORY_TURNS} turns)")
-            return system_messages + truncated
+        prompt = [SystemMessage(content=system_message_content)] + state.get("messages", [])
+        response = await llm.ainvoke(prompt)
 
-        return messages
+        try:
+            task_list = json.loads(response.content)
+            print(f"🔍 [Graph] analyze_task task_list: {task_list}")
+            if len(task_list) > 1:
+                task_message = "User's request is broken down into the following tasks:\n"
+                for idx, task in enumerate(task_list, start=1):
+                    task_message += f"{idx}. {task.get('description', '')}."
+                    task_message += f" Suggested tool: {task.get('requires_tool')}.\n" if task.get("requires_tool") else "\n"
+                return {"messages": [AIMessage(content=task_message)]}
+        except json.JSONDecodeError:
+            print(f"⚠️ [Graph] Failed to parse analyze_task response: {response.content}")
+
+        return
 
     async def query_or_respond(state: MessagesState):
         """Let the model decide whether it needs to call a tool."""
@@ -71,7 +83,7 @@ def build_graph(
         history = state.get("messages", [])
 
         # Truncate history if it's too long to prevent "Input is too long" errors
-        history = truncate_history(history)
+        history = _truncate_history(history)
 
         # Pre-check: Detect generation requests and prevent tool usage
         # This is a generic check that works for any agent
@@ -159,6 +171,7 @@ def build_graph(
                     prompt = [
                         SystemMessage(content=system_message_content)
                     ] + filtered_history
+                    print(f"\n🧠 [Graph] query_or_respond Prompt:\n{prompt}\n")
                     # Use plain LLM without tools
                     response = await llm.ainvoke(prompt)
                     return {"messages": [response]}
@@ -212,6 +225,7 @@ def build_graph(
         prompt = [SystemMessage(content=system_message_content)] + filtered_history
         # Normalize tool messages to fix Bedrock validation issues on subsequent calls
         normalized_prompt = _normalize_tool_messages(prompt)
+        print(f"\n🧠 [Graph] query_or_respond Prompt:\n{normalized_prompt}\n")
         response = await llm_with_tools.ainvoke(normalized_prompt)
 
         # Log whether the LLM is using tool calling
@@ -301,7 +315,7 @@ def build_graph(
 
         # Truncate history to prevent "Input is too long" errors
         messages = state.get("messages", [])
-        messages = truncate_history(messages)
+        messages = _truncate_history(messages)
 
         # 1. Capture Tool Outputs
         tool_messages = _gather_recent_tool_messages(messages)
@@ -436,9 +450,11 @@ def build_graph(
         return {"messages": [response]}
 
     builder = StateGraph(MessagesState)
+    builder.add_node("analyze_task", analyze_task)
     builder.add_node("query_or_respond", query_or_respond)
     builder.add_node("generate", generate)
-    builder.set_entry_point("query_or_respond")
+    builder.set_entry_point("analyze_task")
+    builder.add_edge("analyze_task", "query_or_respond")
 
     if tool_list:
         tool_node = ToolNode(tool_list)
@@ -465,11 +481,34 @@ def build_graph(
         builder.add_edge("tools", "generate")
         builder.add_edge("generate", END)
     else:
-        builder.add_edge("query_or_respond", "generate")
-        builder.add_edge("generate", END)
+        builder.add_edge("query_or_respond", END)
 
     compiled_graph = builder.compile(checkpointer=memory)
     return compiled_graph
+
+
+def _truncate_history(messages: list) -> list:
+    """
+    Truncate message history to keep only the most recent conversation turns.
+    Preserves system messages and the last N conversation turns.
+    """
+    if len(messages) <= MAX_HISTORY_TURNS * 2:  # Rough estimate: 2 messages per turn
+        return messages
+
+    # Separate system messages from conversation messages
+    system_messages = [msg for msg in messages if getattr(msg, "type", None) == "system"]
+    conversation_messages = [msg for msg in messages if getattr(msg, "type", None) != "system"]
+
+    # If we have too many messages, keep only the most recent ones
+    if len(conversation_messages) > MAX_HISTORY_TURNS * 3:  # Allow for tool messages
+        # Keep the most recent messages (last N turns)
+        # A turn typically includes: human, ai, and possibly tool messages
+        # We'll keep the last MAX_HISTORY_TURNS * 3 messages to account for tool calls
+        truncated = conversation_messages[-(MAX_HISTORY_TURNS * 3):]
+        print(f"⚠️ [Graph] Truncated message history from {len(conversation_messages)} to {len(truncated)} messages (keeping last {MAX_HISTORY_TURNS} turns)")
+        return system_messages + truncated
+
+    return messages
 
 
 def _gather_recent_tool_messages(messages: Iterable) -> list:
