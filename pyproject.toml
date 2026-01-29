@@ -15,7 +15,7 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "langchain-mcp-adapters>=0.2.1",
     "plotly>=5.24.1",
-    "wizelit-sdk>=0.1.29",
+    "wizelit-sdk>=0.1.31",
     "typeguard>=4.3.0",
 ]
 

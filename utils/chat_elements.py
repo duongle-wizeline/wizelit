@@ -1,7 +1,7 @@
 import chainlit as cl
 from app_config import config
 
-def create_chat_settings():
+def create_chat_settings() -> cl.ChatSettings:
     return cl.ChatSettings(
         [
             cl.input_widget.Select(

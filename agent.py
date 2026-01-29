@@ -1,6 +1,7 @@
 import os
 import sys
 import warnings
+from typing import Any, Dict, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -16,6 +17,12 @@ from langchain_mcp_adapters.tools import load_mcp_tools
 from graph import build_graph
 from utils.bedrock_config import normalize_aws_env, resolve_bedrock_model_id
 from utils.mcp_storage import get_mcp_servers
+from exceptions import (
+    MCPConnectionError,
+    MCPToolLoadError,
+    GraphBuildError,
+    ConfigurationError,
+)
 
 # Lock to prevent concurrent graph rebuilds
 _rebuild_lock = asyncio.Lock()
@@ -35,11 +42,11 @@ _original_stderr = sys.stderr
 class FilteredStderr:
     """Filter stderr to suppress non-critical async generator cleanup messages"""
 
-    def __init__(self, original_stderr):
+    def __init__(self, original_stderr: Any) -> None:
         self.original_stderr = original_stderr
         self._buffer = ""  # Buffer for multi-line messages
 
-    def write(self, text):
+    def write(self, text: str) -> None:
         # Buffer text to handle multi-line exception messages
         self._buffer += text
 
@@ -55,7 +62,7 @@ class FilteredStderr:
                 self.original_stderr.write(line + "\n")
         # If no newline, keep buffering (will be flushed later)
 
-    def _should_suppress(self, line):
+    def _should_suppress(self, line: str) -> bool:
         """Check if a line should be suppressed"""
         # Suppress "Exception ignored" messages related to async generators
         if "Exception ignored in:" in line and "async_generator" in line:
@@ -86,7 +93,7 @@ class FilteredStderr:
             return True
         return False
 
-    def flush(self):
+    def flush(self) -> None:
         # Write any remaining buffered content
         if self._buffer:
             if not self._should_suppress(self._buffer):
@@ -94,7 +101,7 @@ class FilteredStderr:
             self._buffer = ""
         self.original_stderr.flush()
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Any:
         return getattr(self.original_stderr, name)
 
 
@@ -104,18 +111,18 @@ if not isinstance(sys.stderr, FilteredStderr):
 
 
 class AgentRuntime:
-    def __init__(self):
-        self._graph = None
-        self._exit_stack = AsyncExitStack()
-        self._sessions = {}
-        self._tool_sessions = {}
+    def __init__(self) -> None:
+        self._graph: Optional[Any] = None
+        self._exit_stack: Optional[AsyncExitStack] = AsyncExitStack()
+        self._sessions: Dict[str, Any] = {}
+        self._tool_sessions: Dict[str, Any] = {}
 
-    async def ensure_ready(self):
+    async def ensure_ready(self) -> None:
         if self._graph is not None:
             return
         await self._rebuild_graph()
 
-    async def _rebuild_graph(self):
+    async def _rebuild_graph(self) -> None:
         """Rebuild the graph with current tools from in-memory storage"""
         # Only rebuild if graph doesn't exist yet
         # If graph exists, we should not rebuild it here - use rebuild_graph() explicitly
@@ -127,6 +134,9 @@ class AgentRuntime:
         # rebuild_graph() creates one before calling this, so this only runs for initial build
         if self._exit_stack is None:
             self._exit_stack = AsyncExitStack()
+
+        # Create local reference for type narrowing in nested functions
+        exit_stack = self._exit_stack
 
         # Reset sessions
         self._sessions = {}
@@ -147,18 +157,30 @@ class AgentRuntime:
             if is_streamable_http:
                 print(f"ℹ️  [Agent] Using streamable-http transport for {label}")
 
-                # Use streamable-http client
-                streamable_http = await self._exit_stack.enter_async_context(
-                    streamablehttp_client(url=url)
-                )
-                read_stream, write_stream, get_session_id = streamable_http
-                session = await self._exit_stack.enter_async_context(
-                    ClientSession(read_stream, write_stream)
-                )
-                await session.initialize()
-                tools = await load_mcp_tools(session)
-                if not tools:
-                    raise RuntimeError(f"❌ Connected to {url}, but found 0 tools!")
+                try:
+                    # Use streamable-http client
+                    streamable_http = await exit_stack.enter_async_context(
+                        streamablehttp_client(url=url)
+                    )
+                    read_stream, write_stream, get_session_id = streamable_http
+                    session = await exit_stack.enter_async_context(
+                        ClientSession(read_stream, write_stream)
+                    )
+                    await session.initialize()
+                except Exception as e:
+                    raise MCPConnectionError(label, url, str(e))
+
+                try:
+                    tools = await load_mcp_tools(session)
+                    if not tools:
+                        raise MCPToolLoadError(
+                            label, "Server connected but returned no tools"
+                        )
+                except Exception as e:
+                    if isinstance(e, MCPToolLoadError):
+                        raise
+                    raise MCPToolLoadError(label, str(e))
+
                 print(
                     f"✅ [Agent] Tools Loaded from {label}: {[t.name for t in tools]}"
                 )
@@ -180,17 +202,30 @@ class AgentRuntime:
             # Default to SSE connection for other servers
             if not is_sse:
                 print(f"ℹ️  [Agent] Using SSE transport for {label} (default)")
-            sse = await self._exit_stack.enter_async_context(
-                sse_client(url=url, timeout=600.0)
-            )
-            read_stream, write_stream = sse
-            session = await self._exit_stack.enter_async_context(
-                ClientSession(read_stream, write_stream)
-            )
-            await session.initialize()
-            tools = await load_mcp_tools(session)
-            if not tools:
-                raise RuntimeError(f"❌ Connected to {url}, but found 0 tools!")
+
+            try:
+                sse = await exit_stack.enter_async_context(
+                    sse_client(url=url, timeout=600.0)
+                )
+                read_stream, write_stream = sse
+                session = await exit_stack.enter_async_context(
+                    ClientSession(read_stream, write_stream)
+                )
+                await session.initialize()
+            except Exception as e:
+                raise MCPConnectionError(label, url, str(e))
+
+            try:
+                tools = await load_mcp_tools(session)
+                if not tools:
+                    raise MCPToolLoadError(
+                        label, "Server connected but returned no tools"
+                    )
+            except Exception as e:
+                if isinstance(e, MCPToolLoadError):
+                    raise
+                raise MCPToolLoadError(label, str(e))
+
             print(f"✅ [Agent] Tools Loaded from {label}: {[t.name for t in tools]}")
 
             # Add tools, skipping duplicates (keep first occurrence)
@@ -216,8 +251,8 @@ class AgentRuntime:
             try:
                 tools = await load_mcp_tools(chainlit_session)
                 if not tools:
-                    raise RuntimeError(
-                        f"❌ Found 0 tools from Chainlit session for {label}!"
+                    raise MCPToolLoadError(
+                        label, "Chainlit session connected but returned no tools"
                     )
                 print(
                     f"✅ [Agent] Tools Loaded from {label}: {[t.name for t in tools]}"
@@ -236,8 +271,10 @@ class AgentRuntime:
 
                 self._sessions[label] = chainlit_session
                 return
+            except MCPToolLoadError:
+                raise
             except Exception as e:
-                raise RuntimeError(f"❌ Failed to load tools from {label}: {e}")
+                raise MCPToolLoadError(label, str(e))
 
         try:
             # Get MCP servers from in-memory storage
@@ -260,29 +297,47 @@ class AgentRuntime:
                     )
 
             # Bedrock LLM
-            region = normalize_aws_env(default_region="us-east-1")
-            model_id = resolve_bedrock_model_id()
-            llm = ChatBedrock(
-                model_id=model_id,
-                model_kwargs={"temperature": 0},
-                region_name=region,
-            )
+            try:
+                region = normalize_aws_env(default_region="us-east-1")
+                model_id = resolve_bedrock_model_id()
+            except Exception as e:
+                raise ConfigurationError("AWS Bedrock configuration", str(e))
 
-            self._graph = build_graph(llm=llm, tools=tools_all)
+            try:
+                llm = ChatBedrock(
+                    model=model_id,
+                    model_kwargs={"temperature": 0},
+                    region=region,
+                )
+            except Exception as e:
+                raise ConfigurationError(
+                    "AWS Bedrock LLM initialization",
+                    f"Failed to initialize ChatBedrock with model_id={model_id}, region={region}. {str(e)}"
+                )
+
+            try:
+                self._graph = build_graph(llm=llm, tools=tools_all)
+            except Exception as e:
+                raise GraphBuildError(str(e))
+
             print(f"✅ [Agent] Graph rebuilt with {len(tools_all)} unique tools")
 
+        except (MCPConnectionError, MCPToolLoadError, GraphBuildError, ConfigurationError):
+            # Re-raise custom exceptions as-is
+            await exit_stack.aclose()
+            raise
         except Exception as e:
-            print(f"❌ [Agent] Connection Failed: {e}")
-            await self._exit_stack.aclose()
-            raise e
+            print(f"❌ [Agent] Unexpected error during graph rebuild: {e}")
+            await exit_stack.aclose()
+            raise GraphBuildError(str(e))
 
-    async def rebuild_graph(self):
+    async def rebuild_graph(self) -> None:
         """Public method to force graph rebuild (e.g., after MCP servers are added/removed)"""
         # Use lock to prevent concurrent rebuilds
         async with _rebuild_lock:
             await self._do_rebuild_graph()
 
-    async def _do_rebuild_graph(self):
+    async def _do_rebuild_graph(self) -> None:
         """Internal method that performs the actual rebuild"""
         # Close existing MCP connections if any (but not database connections)
         if self._graph is not None:
@@ -301,7 +356,7 @@ class AgentRuntime:
             # Close old connections
             # Note: "async generator ignored GeneratorExit" and "no running event loop" warnings
             # are non-critical cleanup messages that occur during connection teardown
-            if old_sessions or old_tool_sessions:
+            if old_exit_stack and (old_sessions or old_tool_sessions):
                 try:
                     # Close the exit stack - this will clean up all async contexts
                     # Wrap in try-except to suppress cleanup errors
@@ -346,12 +401,12 @@ class AgentRuntime:
         # Now rebuild
         await self._rebuild_graph()
 
-    def invalidate_graph(self):
+    def invalidate_graph(self) -> None:
         """Invalidate the graph so it will be rebuilt on next access"""
         self._graph = None
         print("🔄 [Agent] Graph invalidated - will be rebuilt on next access")
 
-    async def get_graph(self):
+    async def get_graph(self) -> Any:
         if self._graph is None:
             await self.ensure_ready()
         return self._graph
@@ -362,12 +417,14 @@ class AgentRuntime:
         return computed_graph.get_graph().draw_mermaid()
 
     # Allow calling tools directly (for polling)
-    async def call_tool(self, name: str, arguments: dict):
+    async def call_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         if not self._tool_sessions:
             await self.ensure_ready()
         session = self._tool_sessions.get(name)
         if not session:
-            raise ValueError(f"Tool '{name}' is not registered in any session")
+            raise ValueError(
+                f"Tool '{name}' is not registered. Available tools: {list(self._tool_sessions.keys())}"
+            )
 
         # Check if session is still valid before calling
         # If connection was closed, we need to rebuild the graph
@@ -384,7 +441,9 @@ class AgentRuntime:
                 # Get the new session
                 session = self._tool_sessions.get(name)
                 if not session:
-                    raise ValueError(f"Tool '{name}' is not available after rebuild")
+                    raise ValueError(
+                        f"Tool '{name}' is not available after rebuild. Available tools: {list(self._tool_sessions.keys())}"
+                    )
                 return await session.call_tool(name, arguments)
             else:
                 raise

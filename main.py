@@ -30,6 +30,12 @@ from utils.mcp_storage import (
     clear_removed_servers,
     allow_server_reconnect,
 )
+from exceptions import (
+    GraphBuildError,
+    GraphExecutionError,
+    StreamingError,
+    TimeoutError as WizelitTimeoutError,
+)
 
 
 db_manager = DatabaseManager()
@@ -179,8 +185,10 @@ async def on_mcp(connection, session: ClientSession):
             await asyncio.sleep(0.5)
             await agent_runtime.rebuild_graph()
             logger.info(f"✅ [Main] Graph rebuilt for '{connection.name}'.")
+        except GraphBuildError as rebuild_error:
+            logger.error(f"❌ [Main] Failed to rebuild graph for '{connection.name}': {rebuild_error}")
         except Exception as rebuild_error:
-            logger.error(f"❌ [Main] Error rebuilding graph: {rebuild_error}")
+            logger.error(f"❌ [Main] Unexpected error rebuilding graph: {rebuild_error}")
 
     # Store task reference to prevent garbage collection
     task = asyncio.create_task(delayed_rebuild())
@@ -216,8 +224,10 @@ async def on_mcp_disconnect(name: str, session: ClientSession):
             await asyncio.sleep(0.5)
             await agent_runtime.rebuild_graph()
             logger.info(f"✅ [Main] Graph rebuilt after disconnecting '{name}'.")
+        except GraphBuildError as rebuild_error:
+            logger.error(f"❌ [Main] Failed to rebuild graph after disconnect: {rebuild_error}")
         except Exception as rebuild_error:
-            logger.error(f"❌ [Main] Error rebuilding graph: {rebuild_error}")
+            logger.error(f"❌ [Main] Unexpected error rebuilding graph: {rebuild_error}")
 
     # Store task reference to prevent garbage collection
     task = asyncio.create_task(delayed_rebuild())
@@ -259,6 +269,18 @@ async def main(message: cl.Message):
             
             messages_after = len(result.get("messages", []))
             logger.debug(f"📊 [Main] Messages after invocation: {messages_after} (added {messages_after - messages_before} messages)")
+        except GraphBuildError as graph_error:
+            logger.error(f"Graph build failed: {graph_error}")
+            await cl.Message(
+                content=f"❌ **Graph Build Error:** {graph_error.message}\n\n{graph_error.suggestion}"
+            ).send()
+            return
+        except GraphExecutionError as graph_error:
+            logger.error(f"Graph execution failed: {graph_error}")
+            await cl.Message(
+                content=f"❌ **Execution Error:** {graph_error.message}\n\n{graph_error.suggestion}"
+            ).send()
+            return
         except Exception as graph_error:
             # Log the full error for debugging
             logger.exception(f"Error during graph execution: {graph_error}")
@@ -268,9 +290,15 @@ async def main(message: cl.Message):
                 "closedresourceerror" in error_msg
                 or "no running event loop" in error_msg
             ):
-                await cl.Message(
-                    content=f"⚠️ **Connection Error:** The MCP server connection was interrupted. Please try restarting the MCP servers or try again."
-                ).send()
+                try:
+                    await agent_runtime.rebuild_graph()
+                    await cl.Message(
+                        content="⚠️ **Connection Recovered:** MCP server connection was restored. Please try your query again."
+                    ).send()
+                except GraphBuildError as rebuild_error:
+                    await cl.Message(
+                        content=f"⚠️ **Connection Error:** The MCP server connection was interrupted.\n\n{rebuild_error.suggestion}"
+                    ).send()
                 return
             else:
                 # Re-raise to be caught by outer exception handler
