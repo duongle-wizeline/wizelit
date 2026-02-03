@@ -709,6 +709,59 @@ def build_graph(
             print(
                 f"⚠️ [Graph] LLM generated text instead of tool calls. Content preview: {content_preview}"
             )
+
+            # Generic check: If no tools are available and LLM generated content that looks like a tool call attempt,
+            # provide a helpful error message
+            if hasattr(response, "content") and not tool_list:
+                import re
+
+                content_str = str(response.content).strip()
+
+                # Generic patterns to detect tool call attempts (works for any tool format):
+                # 1. JSON with "tool" and "args" fields
+                json_tool_pattern = (
+                    r'\{[^}]*"tool"\s*:\s*["\'][^"\']+["\'][^}]*"args"\s*:\s*\{'
+                )
+                # 2. JSON-like structures with tool/function/name fields
+                json_like_pattern = (
+                    r'\{[^}]*"(?:tool|function|name)"\s*:\s*["\'][^"\']+["\']'
+                )
+                # 3. Function call syntax: function_name(...) - generic, works for any function name
+                function_call_pattern = r"\b\w+\s*\([^)]*\)"
+                # 4. Code blocks with function calls: ```python function_name(...) ```
+                code_block_with_call = r"```\s*\w*\s*\n?\s*\w+\s*\("
+                # 5. Code-like patterns that suggest tool invocation attempts
+                code_like_pattern = r"(?:```|function|call|invoke|execute)\s*\w+\s*\("
+
+                # Check if content looks like a tool call attempt (any format)
+                looks_like_tool_call = (
+                    re.search(json_tool_pattern, content_str, re.IGNORECASE | re.DOTALL)
+                    or re.search(
+                        json_like_pattern, content_str, re.IGNORECASE | re.DOTALL
+                    )
+                    or re.search(function_call_pattern, content_str, re.IGNORECASE)
+                    or re.search(code_block_with_call, content_str, re.IGNORECASE)
+                    or re.search(code_like_pattern, content_str, re.IGNORECASE)
+                )
+
+                if looks_like_tool_call:
+                    print(
+                        f"⚠️ [Graph] LLM attempted to generate tool call but no tools are available. Content: {content_str[:200]}"
+                    )
+                    return {
+                        "messages": [
+                            AIMessage(
+                                content="⚠️ **No Tools Available**: Your request requires tools, but no MCP servers are currently connected.\n\n"
+                                "**To fix this:**\n"
+                                "1. Go to the Chainlit UI settings\n"
+                                "2. Add MCP servers that provide the tools you need\n"
+                                "3. Ensure MCP servers are running and accessible\n"
+                                "4. Retry your query\n\n"
+                                "**Note:** MCP servers expose tools via HTTP endpoints. Configure them in the Chainlit UI settings."
+                            )
+                        ]
+                    }
+
             # Generic check: If LLM generated text instead of tool calls, and tools are available,
             # check if the content looks like execution code/commands (not just conversational text)
             if hasattr(response, "content") and tool_list:
