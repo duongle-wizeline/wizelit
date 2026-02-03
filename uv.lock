@@ -3814,24 +3814,25 @@ requires-dist = [
     { name = "plotly", specifier = ">=5.24.1" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
     { name = "typeguard", specifier = ">=4.3.0" },
-    { name = "wizelit-sdk", specifier = ">=0.1.31" },
+    { name = "wizelit-sdk", specifier = ">=0.1.32" },
 ]
 
 [[package]]
 name = "wizelit-sdk"
-version = "0.1.31"
+version = "0.1.32"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "asyncpg" },
+    { name = "click" },
     { name = "fastmcp" },
     { name = "redis" },
     { name = "sqlalchemy" },
     { name = "typeguard" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bf/63/8f897d1556cac53f828cb531ca85918f33534902617a9e4f1c3a1f963a2b/wizelit_sdk-0.1.31.tar.gz", hash = "sha256:44b2688d633de134952c866cc9266abd173e2ef99b8f2f454e8367b011d83fbc", size = 142214, upload-time = "2026-01-28T10:40:13.559Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2b/12/362f291f9b265d762f260a38fe7cd64750c4bef8b587bca0e0e639fc3a07/wizelit_sdk-0.1.32.tar.gz", hash = "sha256:dd16c62e31c0ae8e19ec26ddbdbaf6f5a7c6a0436c8a28c64444e6e0363b1838", size = 151458, upload-time = "2026-02-03T08:47:34.912Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/93/be/3ac90ffe3cc6bcb2dc1f2a396cc36ea7673aa309c13d94cd64bb9b807876/wizelit_sdk-0.1.31-py3-none-any.whl", hash = "sha256:742746e69b6d773223b357f34064316eb4840a8f0b7f6ee53518d685cdb10127", size = 22605, upload-time = "2026-01-28T10:40:10.373Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/b1/6770acdf3ad8eb2cbae9bb4d068210b14a9d986ee69f19b383e320c3b8d5/wizelit_sdk-0.1.32-py3-none-any.whl", hash = "sha256:ad3b2a22ca18934a65115321ce3950efcf467685bf697908769bbb5769eb4944", size = 26711, upload-time = "2026-02-03T08:47:32.484Z" },
 ]
 
 [[package]]
