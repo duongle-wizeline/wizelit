@@ -255,11 +255,20 @@ async def main(message: cl.Message):
 
     try:
         # 1. Call the Agent
+        # Get the current message count before invoking to track what's new
         try:
+            # Get current state to see message count before this invocation
+            current_state = await graph.aget_state(config)
+            messages_before = len(current_state.values.get("messages", [])) if current_state.values else 0
+            logger.debug(f"📊 [Main] Messages before invocation: {messages_before}")
+            
             result = await graph.ainvoke(
                 {"messages": [HumanMessage(content=message.content)]},
                 config=config,
             )
+            
+            messages_after = len(result.get("messages", []))
+            logger.debug(f"📊 [Main] Messages after invocation: {messages_after} (added {messages_after - messages_before} messages)")
         except GraphBuildError as graph_error:
             logger.error(f"Graph build failed: {graph_error}")
             await cl.Message(
@@ -295,120 +304,155 @@ async def main(message: cl.Message):
                 # Re-raise to be caught by outer exception handler
                 raise
 
-        response_text = _extract_response(result.get("messages", []))
+        # Extract all handler responses (AI messages without tool_calls) for multi-step workflows
+        # Only extract responses from the current execution (after the most recent human message)
+        all_responses = _extract_all_responses(result.get("messages", []), only_recent=True)
+        logger.info(f"📋 [Main] Extracted {len(all_responses)} handler response(s) from {len(result.get('messages', []))} total messages")
+        
+        # Separate job responses from regular responses
+        job_responses = []
+        regular_responses = []
+        
+        for response_text in all_responses:
+            if not response_text or not response_text.strip():
+                continue
+            
+            # Check for Job ID in each response
+            job_match = re.search(r"JOB_ID:\s*(JOB-[\w-]+)", response_text)
+            if job_match:
+                job_responses.append(response_text)
+            else:
+                regular_responses.append(response_text)
+        
+        # Send all regular (non-job) responses first
+        for idx, response_text in enumerate(regular_responses, 1):
+            logger.info(f"📤 [Main] Sending regular handler response {idx}/{len(regular_responses)}: {response_text[:100]}...")
+            await cl.Message(content=response_text).send()
+        
+        # Then handle job responses (these are long-running and will return early)
+        for idx, response_text in enumerate(job_responses, 1):
+            logger.info(f"📤 [Main] Handling job response {idx}/{len(job_responses)}: {response_text[:100]}...")
+            job_match = re.search(r"JOB_ID:\s*(JOB-[\w-]+)", response_text)
+            
+            if job_match:
+                job_id = job_match.group(1)
+                await cl.Message(
+                    content=f"👨‍✈️ **Captain:** Dispatching Crew... (ID: `{job_id}`)"
+                ).send()
 
-        # 2. Check for Job ID
-        job_match = re.search(r"JOB_ID:\s*(JOB-[\w-]+)", response_text)
+                async with cl.Step(name="Refactoring Crew", type="run") as step:
+                    step.input = "Initializing Agent Swarm..."
+                    await step.update()
 
-        if job_match:
-            job_id = job_match.group(1)
-            await cl.Message(
-                content=f"👨‍✈️ **Captain:** Dispatching Crew... (ID: `{job_id}`)"
-            ).send()
+                    # Check if streaming is enabled
+                    enable_streaming = (
+                        os.getenv("ENABLE_LOG_STREAMING", "true").lower() == "true"
+                    )
 
-            async with cl.Step(name="Refactoring Crew", type="run") as step:
-                step.input = "Initializing Agent Swarm..."
-                await step.update()
-
-                # Check if streaming is enabled
-                enable_streaming = (
-                    os.getenv("ENABLE_LOG_STREAMING", "true").lower() == "true"
-                )
-
-                if enable_streaming:
-                    # Real-time streaming via Redis
-                    try:
-                        from wizelit_sdk.agent_wrapper.streaming import LogStreamer
-
-                        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
-                        log_streamer = LogStreamer(redis_url)
-
-                        accumulated_logs = []
-                        timeout = float(os.getenv("LOG_STREAM_TIMEOUT_SECONDS", "300"))
-
+                    if enable_streaming:
+                        # Real-time streaming via Redis
                         try:
-                            async for log_event in log_streamer.subscribe_logs(
-                                job_id, timeout=timeout
-                            ):
-                                # Handle log messages
-                                if "message" in log_event:
-                                    ts = log_event.get("timestamp", "")[:8]  # HH:MM:SS
-                                    level = log_event.get("level", "INFO")
-                                    msg = log_event.get("message", "")
-                                    formatted = f"[{level}] [{ts}] {msg}"
-                                    accumulated_logs.append(formatted)
+                            from wizelit_sdk.agent_wrapper.streaming import LogStreamer
 
-                                    # Update UI with latest logs
-                                    step.output = "\n".join(
-                                        accumulated_logs[-25:]
-                                    )  # Show last 25 lines
-                                    await step.update()
+                            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+                            log_streamer = LogStreamer(redis_url)
 
-                                # Handle status changes
-                                if "status" in log_event:
-                                    status = log_event["status"]
+                            accumulated_logs = []
+                            timeout = float(os.getenv("LOG_STREAM_TIMEOUT_SECONDS", "300"))
 
-                                    if status == "completed":
-                                        tool_result = log_event.get("result")
-                                        # Delegate handling to helper function; if it returns True, we should return from main.
-                                        if await _handle_tool_result(tool_result):
+                            try:
+                                async for log_event in log_streamer.subscribe_logs(
+                                    job_id, timeout=timeout
+                                ):
+                                    # Handle log messages
+                                    if "message" in log_event:
+                                        ts = log_event.get("timestamp", "")[:8]  # HH:MM:SS
+                                        level = log_event.get("level", "INFO")
+                                        msg = log_event.get("message", "")
+                                        formatted = f"[{level}] [{ts}] {msg}"
+                                        accumulated_logs.append(formatted)
+
+                                        # Update UI with latest logs
+                                        step.output = "\n".join(
+                                            accumulated_logs[-25:]
+                                        )  # Show last 25 lines
+                                        await step.update()
+
+                                    # Handle status changes
+                                    if "status" in log_event:
+                                        status = log_event["status"]
+
+                                        if status == "completed":
+                                            tool_result = log_event.get("result")
+                                            # Delegate handling to helper function; if it returns True, we should return from main.
+                                            if await _handle_tool_result(tool_result):
+                                                return
+
+                                        elif status == "failed":
+                                            error = log_event.get("error", "Unknown error")
+                                            await cl.Message(
+                                                content=f"❌ **Job Failed:** {error}"
+                                            ).send()
                                             return
 
-                                    elif status == "failed":
-                                        error = log_event.get("error", "Unknown error")
-                                        await cl.Message(
-                                            content=f"❌ **Job Failed:** {error}"
-                                        ).send()
-                                        return
+                            except asyncio.TimeoutError:
+                                await cl.Message(
+                                    content="⏱️ Job is still running. Check back later."
+                                ).send()
+                                return
 
-                        except asyncio.TimeoutError:
+                            finally:
+                                await log_streamer.close()
+
+                        except ImportError:
+                            logger.warning("Redis not available, falling back to polling")
+                            enable_streaming = False
+
+                        except Exception as e:
+                            logger.error(f"Streaming error: {e}", exc_info=True)
                             await cl.Message(
-                                content="⏱️ Job is still running. Check back later."
+                                content=f"⚠️ Streaming unavailable, falling back to polling: {e}"
                             ).send()
-                            return
+                            enable_streaming = False
 
-                        finally:
-                            await log_streamer.close()
-
-                    except ImportError:
-                        logger.warning("Redis not available, falling back to polling")
-                        enable_streaming = False
-
-                    except Exception as e:
-                        logger.error(f"Streaming error: {e}", exc_info=True)
-                        await cl.Message(
-                            content=f"⚠️ Streaming unavailable, falling back to polling: {e}"
-                        ).send()
-                        enable_streaming = False
-
-                # Fallback to polling if streaming is disabled or failed
-                if not enable_streaming:
-                    await _polling_for_job(job_id, step)
-        else:
-            try:
-                # Try to parse response as JSON
-                response_json = json.loads(response_text)
-
-                if "status" in response_json:
-                    if response_json["status"] == "completed":
-                        tool_result = response_json["result"]
-
-                        # Delegate handling to helper function; if it returns True, we should return from main.
-                        if await _handle_tool_result(tool_result):
-                            return
-
-                    if response_json["status"] == "failed":
-                        await cl.Message(content="❌ **Job Failed.**").send()
-                        return
-
-                    if "logs" in response_json:
-                        await cl.Message(content=response_json["logs"]).send()
-                        return
-                else:
-                    await cl.Message(content=response_text).send()
-            except json.JSONDecodeError:
-                # Fallback to plain text response
+                    # Fallback to polling if streaming is disabled or failed
+                    if not enable_streaming:
+                        await _polling_for_job(job_id, step)
+                    # Job handling is complete, return
+                    return
+            else:
+                # Not a job response, send the message and continue to next response
                 await cl.Message(content=response_text).send()
+                continue
+        
+        # If no responses were found, fall back to original extraction
+        if not all_responses:
+            response_text = _extract_response(result.get("messages", []))
+            if response_text:
+                try:
+                    # Try to parse response as JSON
+                    response_json = json.loads(response_text)
+
+                    if "status" in response_json:
+                        if response_json["status"] == "completed":
+                            tool_result = response_json["result"]
+
+                            # Delegate handling to helper function; if it returns True, we should return from main.
+                            if await _handle_tool_result(tool_result):
+                                return
+
+                        if response_json["status"] == "failed":
+                            await cl.Message(content="❌ **Job Failed.**").send()
+                            return
+
+                        if "logs" in response_json:
+                            await cl.Message(content=response_json["logs"]).send()
+                            return
+                    else:
+                        await cl.Message(content=response_text).send()
+                except json.JSONDecodeError:
+                    # Fallback to plain text response
+                    await cl.Message(content=response_text).send()
 
     except Exception as e:
         logger.exception("Error in main loop")
@@ -478,6 +522,79 @@ async def _handle_tool_result(tool_result) -> bool:
         return True
 
     return False
+
+
+def _extract_all_responses(messages: list[BaseMessage], only_recent: bool = False) -> list[str]:
+    """
+    Extract all handler responses (AI messages without tool_calls) from messages.
+    This is used for multi-step workflows where multiple tools are called and each
+    produces a handler response that should be shown to the user.
+    
+    Args:
+        messages: List of messages to extract from
+        only_recent: If True, only extract responses after the most recent human message
+                     (i.e., only responses from the current query execution)
+    
+    Returns:
+        A list of response strings in order.
+    """
+    responses = []
+    
+    # If only_recent is True, find the index of the most recent human message
+    start_idx = 0
+    if only_recent:
+        for idx in range(len(messages) - 1, -1, -1):
+            if hasattr(messages[idx], "type") and messages[idx].type == "human":
+                start_idx = idx + 1  # Start from the message after the human message
+                logger.debug(f"🔍 [Extract] Only extracting responses after human message at index {idx}, starting from index {start_idx}")
+                break
+    
+    logger.debug(f"🔍 [Extract] Processing {len(messages)} messages (starting from index {start_idx}) to extract handler responses")
+    for idx in range(start_idx, len(messages)):
+        message = messages[idx]
+        if isinstance(message, AIMessage) and message.content:
+            content = str(message.content)
+            
+            # Skip messages with tool_calls (these are tool invocation messages, not handler responses)
+            if getattr(message, "tool_calls", None):
+                logger.debug(f"🔍 [Extract] Message {idx}: Skipping AI message with tool_calls")
+                continue
+            
+            logger.debug(f"🔍 [Extract] Message {idx}: Found AI message without tool_calls, content preview: {content[:100]}")
+            
+            # Filter out text that looks like function calls (LLM generating code instead of using tools)
+            import re
+            content_stripped = content.strip()
+            
+            # Skip empty content
+            if not content_stripped:
+                continue
+            
+            # Pattern 1: Exact function call match
+            function_call_pattern = r"^\s*\w+\s*\([^)]*\)\s*$"
+            if re.match(function_call_pattern, content_stripped, re.MULTILINE):
+                continue
+            
+            # Pattern 2: Function call at the start
+            if re.match(r"^\s*\w+\s*\([^)]*\)", content_stripped):
+                continue
+            
+            # Pattern 3: Function call followed by newline
+            if re.match(r"^\s*\w+\s*\([^)]*\)\s*\n", content_stripped):
+                continue
+            
+            # Pattern 4: Short standalone function call
+            if len(content_stripped) < 200 and re.match(
+                r"^\s*\w+\s*\([^)]*\)", content_stripped
+            ):
+                continue
+            
+            # This is a valid handler response, add it
+            logger.debug(f"✅ [Extract] Message {idx}: Added as handler response")
+            responses.append(content)
+    
+    logger.debug(f"✅ [Extract] Extracted {len(responses)} handler response(s) total")
+    return responses
 
 
 def _extract_response(messages: list[BaseMessage]) -> str:
