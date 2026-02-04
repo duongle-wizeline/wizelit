@@ -355,7 +355,7 @@ class WizelitStack(Stack):
             "WizelitService",
             cluster=cluster,
             task_definition=task_definition,
-            desired_count=1,  # Running task count
+            desired_count=0,  # Start with 0 - deploy image first, then scale up
             assign_public_ip=True,  # Required since no NAT Gateway
             security_groups=[ecs_security_group],
             vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PUBLIC),

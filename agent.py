@@ -169,21 +169,21 @@ class AgentRuntime:
                 print(f"ℹ️  [Agent] Using streamable-http transport for {label}")
 
                 try:
-                    # Use streamable-http client
+                # Use streamable-http client
                     streamable_http = await exit_stack.enter_async_context(
-                        streamablehttp_client(url=url)
-                    )
-                    read_stream, write_stream, get_session_id = streamable_http
+                    streamablehttp_client(url=url)
+                )
+                read_stream, write_stream, get_session_id = streamable_http
                     session = await exit_stack.enter_async_context(
-                        ClientSession(read_stream, write_stream)
-                    )
-                    await session.initialize()
+                    ClientSession(read_stream, write_stream)
+                )
+                await session.initialize()
                 except Exception as e:
                     raise MCPConnectionError(label, url, str(e))
 
                 try:
-                    tools = await load_mcp_tools(session)
-                    if not tools:
+                tools = await load_mcp_tools(session)
+                if not tools:
                         raise MCPToolLoadError(
                             label, "Server connected but returned no tools"
                         )
@@ -216,19 +216,19 @@ class AgentRuntime:
 
             try:
                 sse = await exit_stack.enter_async_context(
-                    sse_client(url=url, timeout=600.0)
-                )
-                read_stream, write_stream = sse
+                sse_client(url=url, timeout=600.0)
+            )
+            read_stream, write_stream = sse
                 session = await exit_stack.enter_async_context(
-                    ClientSession(read_stream, write_stream)
-                )
-                await session.initialize()
+                ClientSession(read_stream, write_stream)
+            )
+            await session.initialize()
             except Exception as e:
                 raise MCPConnectionError(label, url, str(e))
 
             try:
-                tools = await load_mcp_tools(session)
-                if not tools:
+            tools = await load_mcp_tools(session)
+            if not tools:
                     raise MCPToolLoadError(
                         label, "Server connected but returned no tools"
                     )
@@ -314,22 +314,22 @@ class AgentRuntime:
 
             # Bedrock LLM
             try:
-                region = normalize_aws_env(default_region="us-east-1")
-                model_id = resolve_bedrock_model_id()
+            region = normalize_aws_env(default_region="us-east-1")
+            model_id = resolve_bedrock_model_id()
             except Exception as e:
                 raise ConfigurationError("AWS Bedrock configuration", str(e))
 
             try:
-                llm = ChatBedrock(
+            llm = ChatBedrock(
                     model=model_id,
-                    model_kwargs={"temperature": 0},
+                model_kwargs={"temperature": 0},
                     region=region,
                 )
             except Exception as e:
                 raise ConfigurationError(
                     "AWS Bedrock LLM initialization",
                     f"Failed to initialize ChatBedrock with model_id={model_id}, region={region}. {str(e)}"
-                )
+            )
 
             try:
                 self._graphs[uid] = build_graph(llm=llm, tools=tools_all)

@@ -131,7 +131,7 @@ echo -e "${YELLOW}[3/6] Building Docker image (linux/amd64)...${NC}"
 if [ -n "$DOCKER_NO_CACHE" ]; then
     echo -e "${BLUE}   Building WITHOUT cache (clean rebuild)...${NC}"
 else
-    echo -e "${BLUE}   This may take a few minutes...${NC}"
+echo -e "${BLUE}   This may take a few minutes...${NC}"
 fi
 docker build --platform linux/amd64 $DOCKER_NO_CACHE -t $ECR_REPOSITORY .
 echo -e "${GREEN}✓ Docker build complete${NC}"
