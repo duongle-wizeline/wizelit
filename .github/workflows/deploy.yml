@@ -5,6 +5,15 @@ on:
     branches:
       - main
   workflow_dispatch: # Allow manual trigger
+    inputs:
+      no_cache:
+        description: 'Build without Docker cache (fresh build)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 env:
   AWS_REGION: ap-southeast-2
@@ -39,9 +48,17 @@ jobs:
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
+          NO_CACHE: ${{ github.event.inputs.no_cache || 'false' }}
         run: |
           # Build the Docker image
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          if [ "$NO_CACHE" = "true" ]; then
+            echo "🔄 Building without cache (fresh build)..."
+            docker build --no-cache -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          else
+            echo "⚡ Building with cache..."
+            docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          fi
+          
           docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
           
           # Push both tags
