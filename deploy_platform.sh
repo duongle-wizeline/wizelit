@@ -4,12 +4,15 @@
 # Builds Docker image for AMD64 and deploys to AWS ECS
 #
 # Usage:
-#   ./deploy.sh          - Full deploy (build, push, deploy)
-#   ./deploy.sh status   - Check ECS service status
-#   ./deploy.sh logs     - View recent CloudWatch logs
-#   ./deploy.sh open     - Open app in browser
-#   ./deploy.sh stop     - Scale down to 0 (save costs)
-#   ./deploy.sh start    - Scale up to 1
+#   ./deploy_platform.sh              - Full deploy (build, push, deploy)
+#   ./deploy_platform.sh deploy-nocache - Full deploy without Docker cache
+#   ./deploy_platform.sh status       - Check ECS service status
+#   ./deploy_platform.sh logs         - View recent CloudWatch logs
+#   ./deploy_platform.sh open         - Open app in browser
+#   ./deploy_platform.sh stop         - Scale ECS to 0 (quick, saves ~$10/mo)
+#   ./deploy_platform.sh start        - Scale ECS to 1
+#   ./deploy_platform.sh hibernate    - Stop ECS + RDS (saves ~$25/mo)
+#   ./deploy_platform.sh wake         - Start RDS + ECS
 # =============================================================================
 
 set -e  # Exit on error
@@ -25,10 +28,27 @@ NC='\033[0m' # No Color
 AWS_REGION="${AWS_REGION:-ap-southeast-2}"
 ECR_REPOSITORY="wizelit"
 ECS_CLUSTER="wizelit-cluster"
+RDS_IDENTIFIER="wizelit-db"  # RDS instance identifier
 
 # Get service ARN helper
 get_service_arn() {
     aws ecs list-services --cluster $ECS_CLUSTER --query 'serviceArns[0]' --output text --region $AWS_REGION 2>/dev/null
+}
+
+# Get RDS instance identifier (auto-detect from stack)
+get_rds_identifier() {
+    aws rds describe-db-instances --region $AWS_REGION \
+        --query "DBInstances[?contains(DBInstanceIdentifier, 'wizelit')].DBInstanceIdentifier" \
+        --output text 2>/dev/null | head -1
+}
+
+# Get RDS status
+get_rds_status() {
+    local rds_id=$(get_rds_identifier)
+    if [ -n "$rds_id" ]; then
+        aws rds describe-db-instances --db-instance-identifier "$rds_id" --region $AWS_REGION \
+            --query 'DBInstances[0].DBInstanceStatus' --output text 2>/dev/null
+    fi
 }
 
 # Get load balancer URL helper
@@ -78,6 +98,102 @@ case "${1:-deploy}" in
         echo -e "${GREEN}✓ Service scaling up. Wait ~1-2 minutes for it to be ready.${NC}"
         exit 0
         ;;
+    hibernate)
+        echo -e "${YELLOW}🛌 Hibernating Wizelit (stopping ECS + RDS)...${NC}"
+        echo ""
+        
+        # Stop ECS
+        echo -e "${BLUE}[1/2] Scaling down ECS to 0...${NC}"
+        SERVICE_ARN=$(get_service_arn)
+        if [ -n "$SERVICE_ARN" ] && [ "$SERVICE_ARN" != "None" ]; then
+            aws ecs update-service --cluster $ECS_CLUSTER --service $SERVICE_ARN --desired-count 0 --region $AWS_REGION --no-cli-pager > /dev/null
+            echo -e "${GREEN}✓ ECS stopped${NC}"
+        else
+            echo -e "${YELLOW}⚠ No ECS service found${NC}"
+        fi
+        
+        # Stop RDS
+        echo -e "${BLUE}[2/2] Stopping RDS database...${NC}"
+        RDS_ID=$(get_rds_identifier)
+        if [ -n "$RDS_ID" ]; then
+            RDS_STATUS=$(get_rds_status)
+            if [ "$RDS_STATUS" == "available" ]; then
+                aws rds stop-db-instance --db-instance-identifier "$RDS_ID" --region $AWS_REGION --no-cli-pager > /dev/null 2>&1 || true
+                echo -e "${GREEN}✓ RDS stopping (takes ~5 minutes)${NC}"
+            elif [ "$RDS_STATUS" == "stopped" ]; then
+                echo -e "${YELLOW}⚠ RDS already stopped${NC}"
+            else
+                echo -e "${YELLOW}⚠ RDS status: $RDS_STATUS (cannot stop)${NC}"
+            fi
+        else
+            echo -e "${YELLOW}⚠ No RDS instance found${NC}"
+        fi
+        
+        echo ""
+        echo -e "${GREEN}🛌 Hibernate complete!${NC}"
+        echo -e "${BLUE}   Estimated savings: ~\$25/month (ECS + RDS)${NC}"
+        echo -e "${YELLOW}   ⚠ Note: RDS auto-restarts after 7 days${NC}"
+        echo -e "${YELLOW}   ⚠ ALB + ElastiCache cannot be stopped (~\$30/month still running)${NC}"
+        echo ""
+        echo -e "To wake up: ${YELLOW}./deploy_platform.sh wake${NC}"
+        exit 0
+        ;;
+    wake)
+        echo -e "${YELLOW}☀️ Waking up Wizelit (starting RDS + ECS)...${NC}"
+        echo ""
+        
+        # Start RDS first (takes longer)
+        echo -e "${BLUE}[1/2] Starting RDS database...${NC}"
+        RDS_ID=$(get_rds_identifier)
+        if [ -n "$RDS_ID" ]; then
+            RDS_STATUS=$(get_rds_status)
+            if [ "$RDS_STATUS" == "stopped" ]; then
+                aws rds start-db-instance --db-instance-identifier "$RDS_ID" --region $AWS_REGION --no-cli-pager > /dev/null 2>&1 || true
+                echo -e "${GREEN}✓ RDS starting (takes ~5-10 minutes)${NC}"
+                echo -e "${BLUE}   Waiting for RDS to be available...${NC}"
+                # Wait for RDS to be available (with timeout)
+                WAIT_COUNT=0
+                MAX_WAIT=60  # 10 minutes max
+                while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
+                    RDS_STATUS=$(get_rds_status)
+                    if [ "$RDS_STATUS" == "available" ]; then
+                        echo -e "${GREEN}✓ RDS is available${NC}"
+                        break
+                    fi
+                    echo -e "${BLUE}   RDS status: $RDS_STATUS (waiting...)${NC}"
+                    sleep 10
+                    WAIT_COUNT=$((WAIT_COUNT + 1))
+                done
+            elif [ "$RDS_STATUS" == "available" ]; then
+                echo -e "${GREEN}✓ RDS already running${NC}"
+            else
+                echo -e "${YELLOW}⚠ RDS status: $RDS_STATUS${NC}"
+            fi
+        else
+            echo -e "${YELLOW}⚠ No RDS instance found${NC}"
+        fi
+        
+        # Start ECS
+        echo -e "${BLUE}[2/2] Scaling up ECS to 1...${NC}"
+        SERVICE_ARN=$(get_service_arn)
+        if [ -n "$SERVICE_ARN" ] && [ "$SERVICE_ARN" != "None" ]; then
+            aws ecs update-service --cluster $ECS_CLUSTER --service $SERVICE_ARN --desired-count 1 --region $AWS_REGION --no-cli-pager > /dev/null
+            echo -e "${GREEN}✓ ECS scaling up (takes ~1-2 minutes)${NC}"
+        else
+            echo -e "${YELLOW}⚠ No ECS service found${NC}"
+        fi
+        
+        echo ""
+        echo -e "${GREEN}☀️ Wake complete!${NC}"
+        echo -e "Check status: ${YELLOW}./deploy_platform.sh status${NC}"
+        
+        # Show URL
+        ALB_URL=$(get_alb_url)
+        if [ -n "$ALB_URL" ]; then
+            echo -e "App URL: ${GREEN}http://$ALB_URL${NC}"
+        fi
+        exit 0
+        ;;
     deploy|"")
         # Continue with deploy below (uses Docker cache)
         DOCKER_NO_CACHE=""
@@ -90,13 +206,17 @@ case "${1:-deploy}" in
         echo "Usage: ./deploy_platform.sh [command]"
         echo ""
         echo "Commands:"
-        echo "  deploy        - Full deploy (default, uses Docker cache)"
+        echo "  deploy         - Full deploy (default, uses Docker cache)"
         echo "  deploy-nocache - Full deploy without Docker cache"
-        echo "  status        - Check ECS service status"
-        echo "  logs          - View recent CloudWatch logs"
-        echo "  open          - Open app in browser"
-        echo "  stop          - Scale down to 0 (save costs)"
-        echo "  start         - Scale up to 1"
+        echo "  status         - Check ECS service status"
+        echo "  logs           - View recent CloudWatch logs"
+        echo "  open           - Open app in browser"
+        echo ""
+        echo "Cost management:"
+        echo "  stop           - Scale ECS to 0 (quick, saves ~\$10/mo)"
+        echo "  start          - Scale ECS to 1"
+        echo "  hibernate      - Stop ECS + RDS (saves ~\$25/mo, RDS restarts after 7 days)"
+        echo "  wake           - Start RDS + ECS (takes ~5-10 min for RDS)"
         exit 1
         ;;
 esac
