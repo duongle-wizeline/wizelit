@@ -6,7 +6,7 @@ import uuid
 import asyncio
 import time
 import re
-from typing import Any, Dict, Optional, cast
+from typing import Dict, Optional, cast
 from pathlib import Path
 from mcp import ClientSession
 
@@ -27,15 +27,86 @@ from utils.mcp_storage import (
     clear_all,
     get_mcp_servers,
     is_server_removed,
-    clear_removed_servers,
-    allow_server_reconnect,
+    get_removal_cooldown_remaining,
 )
 from exceptions import (
     GraphBuildError,
     GraphExecutionError,
-    StreamingError,
-    TimeoutError as WizelitTimeoutError,
 )
+
+
+def _get_user_id() -> str:
+    """
+    Get a unique user identifier from Chainlit context.
+
+    CRITICAL: Must return a consistent, unique ID per authenticated user.
+    The ID is used to isolate MCP server connections between users.
+
+    Priority:
+    1. Authenticated user's identifier (email from OAuth)
+    2. Authenticated user's internal ID
+    3. WebSocket session ID (unique per browser tab)
+    4. Stored user_id from chat session
+    5. Generated UUID (should never happen)
+    """
+    user_id = None
+    source = None
+
+    try:
+        if hasattr(cl, 'context') and cl.context and hasattr(cl.context, 'session'):
+            session = cl.context.session
+
+            # First priority: authenticated user identifier (OAuth email/ID)
+            if hasattr(session, 'user') and session.user:
+                user = session.user
+                # Try identifier (usually email from OAuth)
+                if hasattr(user, 'identifier') and user.identifier:
+                    user_id = user.identifier
+                    source = "user.identifier"
+                # Try internal user ID
+                elif hasattr(user, 'id') and user.id:
+                    user_id = user.id
+                    source = "user.id"
+
+            # Second priority: WebSocket client ID (unique per browser connection)
+            # This is more reliable than session.id for distinguishing browsers
+            if not user_id:
+                if hasattr(session, 'client_id') and session.client_id:
+                    user_id = session.client_id
+                    source = "client_id"
+                elif hasattr(session, 'id') and session.id:
+                    # session.id as fallback (but may not be unique per user!)
+                    user_id = session.id
+                    source = "session.id"
+    except Exception as e:
+        logger.warning(f"⚠️ [Auth] Error getting user_id from context: {e}")
+
+    # Fallback: try to get from user_session (set in on_chat_start)
+    if not user_id:
+        try:
+            stored_id = cl.user_session.get("user_id")
+            if stored_id:
+                user_id = stored_id
+                source = "user_session"
+        except Exception:
+            pass
+
+    # Last resort: generate a UUID (indicates a problem - should never happen)
+    if not user_id:
+        user_id = f"anon_{uuid.uuid4().hex[:12]}"
+        source = "generated_uuid"
+        logger.warning(f"⚠️ [Auth] Generated anonymous user_id: {user_id} - this may cause isolation issues!")
+
+    # Log for debugging multi-user issues
+    logger.debug(f"🔑 [Auth] User ID: {user_id} (source: {source})")
+    return user_id
+
+
+# Health check endpoint for ALB/ECS
+@cl.server.app.get("/health")
+async def health_check():
+    """Health check endpoint for load balancer and container orchestration."""
+    return {"status": "healthy", "service": "wizelit"}
 
 
 db_manager = DatabaseManager()
@@ -48,15 +119,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 TASK_TIMEOUT = os.getenv("TASK_TIMEOUT", 1200)  # Default to 20 minutes
 
-# Track when the app started (to distinguish auto-reconnect from manual add)
-_app_start_time = None
-
 
 @cl.on_app_startup
 async def on_startup():
-    global _app_start_time
-    _app_start_time = time.time()
-
     await db_manager.init_db()
 
     # CRITICAL: Clear all MCP servers from in-memory storage on startup
@@ -69,13 +134,13 @@ async def on_startup():
         )
         clear_all()
 
-    # NOTE: We do NOT clear the removed servers list on startup
-    # This ensures that if Chainlit tries to auto-reconnect to servers that were
-    # explicitly removed in a previous session, we will reject those connections
-    # The removed list persists across restarts via a file (.removed_mcp_servers.json)
-    # However, if a user manually adds a server after startup, we'll allow it and remove from blacklist
+    # Clear any in-memory removal blacklist (in case of hot reload)
+    # NOTE: The blacklist is now in-memory only (no file persistence)
+    # Chainlit's browser-stored MCP configs are the source of truth
+    from utils.mcp_storage import clear_removed_servers
+    clear_removed_servers()
     logger.info(
-        f"📋 [Main] Removed servers list persists across restarts (prevents unwanted auto-reconnects)"
+        "🧹 [Main] Ready for MCP connections - Chainlit UI is source of truth"
     )
 
     # Refresh handler metadata on startup
@@ -95,29 +160,34 @@ async def on_startup():
 @cl.on_mcp_connect
 async def on_mcp(connection, session: ClientSession):
     server_key = connection.name.replace(" ", "")
+    user_id = _get_user_id()
 
-    # Check if this server was explicitly removed
-    if is_server_removed(server_key):
-        # Distinguish between auto-reconnect (during startup) and manual add (after startup)
-        # Auto-reconnects happen within the first 10 seconds after startup
-        # Manual adds happen later when user explicitly adds via UI
-        startup_window = 10  # seconds
-        time_since_startup = time.time() - (_app_start_time or 0)
+    # Enhanced logging to debug multi-user issues
+    logger.info(f"🔌 [Main] MCP connect request: server='{connection.name}', user='{user_id}'")
 
-        if time_since_startup < startup_window:
-            # This is likely an auto-reconnect during startup - reject it
-            logger.warning(
-                f"🚫 [Main] Rejecting auto-reconnect to '{connection.name}' - server was explicitly removed (startup window: {time_since_startup:.1f}s)"
-            )
-            # Don't add to storage, don't rebuild graph
-            # The connection will be established by Chainlit, but we won't use it
-            return
-        else:
-            # This is likely a manual add after startup - allow it and remove from blacklist
-            logger.info(
-                f"✅ [Main] Allowing manual re-add of '{connection.name}' (removed from blacklist, time since startup: {time_since_startup:.1f}s)"
-            )
-            allow_server_reconnect(server_key)
+    # Log additional context for debugging
+    try:
+        if hasattr(cl, 'context') and cl.context and hasattr(cl.context, 'session'):
+            ctx_session = cl.context.session
+            user_info = "no_user"
+            if hasattr(ctx_session, 'user') and ctx_session.user:
+                user_info = f"identifier={getattr(ctx_session.user, 'identifier', 'N/A')}, id={getattr(ctx_session.user, 'id', 'N/A')}"
+            client_id = getattr(ctx_session, 'client_id', 'N/A')
+            session_id = getattr(ctx_session, 'id', 'N/A')
+            logger.info(f"🔍 [Main] Context details: client_id={client_id}, session_id={session_id}, user=({user_info})")
+    except Exception as e:
+        logger.debug(f"Could not log context details: {e}")
+
+    # Check if this server was recently removed for THIS USER (in cooldown period)
+    # The cooldown prevents Chainlit auto-reconnect from immediately re-adding removed servers
+    if is_server_removed(server_key, user_id=user_id):
+        remaining = get_removal_cooldown_remaining(server_key, user_id=user_id)
+        logger.warning(
+            f"🚫 [Main] Rejecting reconnect to '{connection.name}' for user '{user_id}' - server is in removal cooldown ({remaining:.0f}s remaining)"
+        )
+        # Don't add to storage, don't rebuild graph
+        # The connection will be established by Chainlit, but we won't use it
+        return
 
     # List available tools
     result = await session.list_tools()
@@ -148,27 +218,27 @@ async def on_mcp(connection, session: ClientSession):
 
         tools.append(tool_dict)
 
-    # Store server metadata in memory (replaces agents.yaml)
+    # Store server metadata in memory (per-user)
     new_connection = connection.__dict__.copy()
     new_connection["tools"] = tools
     # CRITICAL: For stdio-based servers (like Code Formatter), store the Chainlit session
     # so agent.py can reuse it instead of trying to reconnect
     new_connection["chainlit_session"] = session
 
-    # Check if server already exists (to avoid overwriting on Chainlit auto-reconnect)
-    existing_server = get_mcp_server(server_key)
+    # Check if server already exists for this user (to avoid overwriting on Chainlit auto-reconnect)
+    existing_server = get_mcp_server(server_key, user_id=user_id)
     if existing_server:
         logger.info(
-            f"ℹ️ [Main] MCP server '{connection.name}' already in storage, updating (Chainlit auto-reconnect)"
+            f"ℹ️ [Main] MCP server '{connection.name}' already in storage for user '{user_id}', updating"
         )
 
-    add_mcp_server(server_key, new_connection)
-    logger.info(f"✅ [Main] Stored MCP server '{connection.name}' in memory")
+    add_mcp_server(server_key, new_connection, user_id=user_id)
+    logger.info(f"✅ [Main] Stored MCP server '{connection.name}' for user '{user_id}'")
     refresh_prompt_guides()
-    # Refresh tool response handler metadata
+    # Refresh tool response handler metadata for this user
     from utils.tool_response_handler import _tool_response_handler
 
-    _tool_response_handler.refresh_metadata()
+    _tool_response_handler.refresh_metadata(user_id=user_id)
 
     # CRITICAL: Rebuild the graph so it includes the newly added tools
     # The graph is cached and won't automatically pick up new tools
@@ -179,12 +249,15 @@ async def on_mcp(connection, session: ClientSession):
 
     # Use asyncio.create_task to run rebuild in background after a short delay
     # This allows Chainlit to complete its session setup without blocking
+    # Capture user_id for the closure
+    rebuild_user_id = user_id
+
     async def delayed_rebuild():
         try:
             # Wait a bit to let Chainlit finish its session operations
             await asyncio.sleep(0.5)
-            await agent_runtime.rebuild_graph()
-            logger.info(f"✅ [Main] Graph rebuilt for '{connection.name}'.")
+            await agent_runtime.rebuild_graph(user_id=rebuild_user_id)
+            logger.info(f"✅ [Main] Graph rebuilt for '{connection.name}' (user '{rebuild_user_id}').")
         except GraphBuildError as rebuild_error:
             logger.error(f"❌ [Main] Failed to rebuild graph for '{connection.name}': {rebuild_error}")
         except Exception as rebuild_error:
@@ -198,32 +271,38 @@ async def on_mcp(connection, session: ClientSession):
 @cl.on_mcp_disconnect
 async def on_mcp_disconnect(name: str, session: ClientSession):
     """Called when an MCP connection is terminated"""
-    # Remove the disconnected server from in-memory storage
     no_spaces_name = name.replace(" ", "")
-    remove_mcp_server(no_spaces_name)
-    logger.info(f"🗑️ [Main] Removed MCP server '{name}' from storage")
+    user_id = _get_user_id()
 
-    # CRITICAL: Immediately invalidate the graph so it will be rebuilt on next access
-    # This ensures the graph doesn't have stale tools
-    agent_runtime.invalidate_graph()
-    logger.info(f"🔄 [Main] Graph invalidated after disconnecting '{name}'")
+    logger.info(f"🔌 [Main] MCP disconnect: server='{name}', user='{user_id}'")
+
+    # Remove the disconnected server from in-memory storage (for this user only)
+    remove_mcp_server(no_spaces_name, user_id=user_id)
+    logger.info(f"🗑️ [Main] Removed MCP server '{name}' for user '{user_id}'")
+
+    # CRITICAL: Immediately invalidate the graph for THIS USER so it will be rebuilt on next access
+    agent_runtime.invalidate_graph(user_id=user_id)
+    logger.info(f"🔄 [Main] Graph invalidated for user '{user_id}' after disconnecting '{name}'")
 
     refresh_prompt_guides()
-    # Refresh tool response handler metadata
+    # Refresh tool response handler metadata for this user
     from utils.tool_response_handler import _tool_response_handler
 
-    _tool_response_handler.refresh_metadata()
+    _tool_response_handler.refresh_metadata(user_id=user_id)
 
     # CRITICAL: Rebuild the graph after removing tools
     # Run rebuild in background to avoid blocking
-    logger.info(f"🔄 [Main] Scheduling graph rebuild after removing '{name}'...")
+    logger.info(f"🔄 [Main] Scheduling graph rebuild for user '{user_id}' after removing '{name}'...")
+
+    # Capture user_id for the closure
+    rebuild_user_id = user_id
 
     async def delayed_rebuild():
         try:
             # Wait a bit to let any cleanup operations complete
             await asyncio.sleep(0.5)
-            await agent_runtime.rebuild_graph()
-            logger.info(f"✅ [Main] Graph rebuilt after disconnecting '{name}'.")
+            await agent_runtime.rebuild_graph(user_id=rebuild_user_id)
+            logger.info(f"✅ [Main] Graph rebuilt for user '{rebuild_user_id}' after disconnecting '{name}'.")
         except GraphBuildError as rebuild_error:
             logger.error(f"❌ [Main] Failed to rebuild graph after disconnect: {rebuild_error}")
         except Exception as rebuild_error:
@@ -238,13 +317,53 @@ async def on_mcp_disconnect(name: str, session: ClientSession):
 async def on_chat_start():
     session_id = str(uuid.uuid4())
     cl.user_session.set("session_id", session_id)
+
+    # Store user_id in session for consistent access
+    user_id = _get_user_id()
+    cl.user_session.set("user_id", user_id)
+
+    # Log detailed info for debugging multi-user isolation
+    logger.info(f"🆕 [Main] New chat started for user '{user_id}' (session: {session_id[:8]}...)")
+
     await create_chat_settings().send()
+
+    # Show MCP status (with small delay to let auto-reconnects complete)
+    await asyncio.sleep(1.0)
+
+    # Get MCP servers for THIS USER only
+    mcp_servers = get_mcp_servers(user_id=user_id)
+
+    # Log storage state for debugging multi-user issues
+    from utils.mcp_storage import get_all_user_ids, get_user_count
+    total_users = get_user_count()
+    all_users = get_all_user_ids()
+    logger.info(f"📊 [Main] Storage state: {total_users} user(s) with MCP servers: {all_users}")
+    logger.info(f"📊 [Main] User '{user_id}' has {len(mcp_servers)} MCP server(s): {list(mcp_servers.keys())}")
+
+    if mcp_servers:
+        tool_count = sum(len(s.get("tools", [])) for s in mcp_servers.values())
+        server_list = ", ".join(f"`{name}`" for name in mcp_servers.keys())
+        # Show user ID (truncated) for debugging multi-user isolation
+        user_display = user_id[:20] + "..." if len(user_id) > 20 else user_id
+        await cl.Message(
+            content=f"🔧 **{len(mcp_servers)} MCP Server(s) Connected:** {server_list}\n"
+            f"📦 **{tool_count} tools** available.\n"
+            f"🔑 *User: {user_display}*"
+        ).send()
+    else:
+        await cl.Message(
+            content="⚠️ **No MCP tools connected yet.**\n"
+            "Add servers via the MCP panel, or they may auto-connect shortly."
+        ).send()
 
 
 @cl.on_message
 async def main(message: cl.Message):
     session_id = cl.user_session.get("session_id")
-    graph = await agent_runtime.get_graph()
+    user_id = cl.user_session.get("user_id") or _get_user_id()
+
+    # Get graph for THIS USER
+    graph = await agent_runtime.get_graph(user_id=user_id)
     if graph is None:
         await cl.Message(
             content="⚠️ **Connection Error:** The agent graph is unavailable. Please try again."
@@ -261,12 +380,12 @@ async def main(message: cl.Message):
             current_state = await graph.aget_state(config)
             messages_before = len(current_state.values.get("messages", [])) if current_state.values else 0
             logger.debug(f"📊 [Main] Messages before invocation: {messages_before}")
-            
+
             result = await graph.ainvoke(
                 {"messages": [HumanMessage(content=message.content)]},
                 config=config,
             )
-            
+
             messages_after = len(result.get("messages", []))
             logger.debug(f"📊 [Main] Messages after invocation: {messages_after} (added {messages_after - messages_before} messages)")
         except GraphBuildError as graph_error:
@@ -291,7 +410,7 @@ async def main(message: cl.Message):
                 or "no running event loop" in error_msg
             ):
                 try:
-                    await agent_runtime.rebuild_graph()
+                    await agent_runtime.rebuild_graph(user_id=user_id)
                     await cl.Message(
                         content="⚠️ **Connection Recovered:** MCP server connection was restored. Please try your query again."
                     ).send()
@@ -308,32 +427,32 @@ async def main(message: cl.Message):
         # Only extract responses from the current execution (after the most recent human message)
         all_responses = _extract_all_responses(result.get("messages", []), only_recent=True)
         logger.info(f"📋 [Main] Extracted {len(all_responses)} handler response(s) from {len(result.get('messages', []))} total messages")
-        
+
         # Separate job responses from regular responses
         job_responses = []
         regular_responses = []
-        
+
         for response_text in all_responses:
             if not response_text or not response_text.strip():
                 continue
-            
+
             # Check for Job ID in each response
             job_match = re.search(r"JOB_ID:\s*(JOB-[\w-]+)", response_text)
             if job_match:
                 job_responses.append(response_text)
             else:
                 regular_responses.append(response_text)
-        
+
         # Send all regular (non-job) responses first
         for idx, response_text in enumerate(regular_responses, 1):
             logger.info(f"📤 [Main] Sending regular handler response {idx}/{len(regular_responses)}: {response_text[:100]}...")
             await cl.Message(content=response_text).send()
-        
+
         # Then handle job responses (these are long-running and will return early)
         for idx, response_text in enumerate(job_responses, 1):
             logger.info(f"📤 [Main] Handling job response {idx}/{len(job_responses)}: {response_text[:100]}...")
             job_match = re.search(r"JOB_ID:\s*(JOB-[\w-]+)", response_text)
-            
+
             if job_match:
                 job_id = job_match.group(1)
                 await cl.Message(
@@ -417,14 +536,14 @@ async def main(message: cl.Message):
 
                     # Fallback to polling if streaming is disabled or failed
                     if not enable_streaming:
-                        await _polling_for_job(job_id, step)
+                        await _polling_for_job(job_id, step, user_id=user_id)
                     # Job handling is complete, return
                     return
             else:
                 # Not a job response, send the message and continue to next response
                 await cl.Message(content=response_text).send()
                 continue
-        
+
         # If no responses were found, fall back to original extraction
         if not all_responses:
             response_text = _extract_response(result.get("messages", []))
@@ -529,17 +648,17 @@ def _extract_all_responses(messages: list[BaseMessage], only_recent: bool = Fals
     Extract all handler responses (AI messages without tool_calls) from messages.
     This is used for multi-step workflows where multiple tools are called and each
     produces a handler response that should be shown to the user.
-    
+
     Args:
         messages: List of messages to extract from
         only_recent: If True, only extract responses after the most recent human message
                      (i.e., only responses from the current query execution)
-    
+
     Returns:
         A list of response strings in order.
     """
     responses = []
-    
+
     # If only_recent is True, find the index of the most recent human message
     start_idx = 0
     if only_recent:
@@ -548,51 +667,51 @@ def _extract_all_responses(messages: list[BaseMessage], only_recent: bool = Fals
                 start_idx = idx + 1  # Start from the message after the human message
                 logger.debug(f"🔍 [Extract] Only extracting responses after human message at index {idx}, starting from index {start_idx}")
                 break
-    
+
     logger.debug(f"🔍 [Extract] Processing {len(messages)} messages (starting from index {start_idx}) to extract handler responses")
     for idx in range(start_idx, len(messages)):
         message = messages[idx]
         if isinstance(message, AIMessage) and message.content:
             content = str(message.content)
-            
+
             # Skip messages with tool_calls (these are tool invocation messages, not handler responses)
             if getattr(message, "tool_calls", None):
                 logger.debug(f"🔍 [Extract] Message {idx}: Skipping AI message with tool_calls")
                 continue
-            
+
             logger.debug(f"🔍 [Extract] Message {idx}: Found AI message without tool_calls, content preview: {content[:100]}")
-            
+
             # Filter out text that looks like function calls (LLM generating code instead of using tools)
             import re
             content_stripped = content.strip()
-            
+
             # Skip empty content
             if not content_stripped:
                 continue
-            
+
             # Pattern 1: Exact function call match
             function_call_pattern = r"^\s*\w+\s*\([^)]*\)\s*$"
             if re.match(function_call_pattern, content_stripped, re.MULTILINE):
                 continue
-            
+
             # Pattern 2: Function call at the start
             if re.match(r"^\s*\w+\s*\([^)]*\)", content_stripped):
                 continue
-            
+
             # Pattern 3: Function call followed by newline
             if re.match(r"^\s*\w+\s*\([^)]*\)\s*\n", content_stripped):
                 continue
-            
+
             # Pattern 4: Short standalone function call
             if len(content_stripped) < 200 and re.match(
                 r"^\s*\w+\s*\([^)]*\)", content_stripped
             ):
                 continue
-            
+
             # This is a valid handler response, add it
             logger.debug(f"✅ [Extract] Message {idx}: Added as handler response")
             responses.append(content)
-    
+
     logger.debug(f"✅ [Extract] Extracted {len(responses)} handler response(s) total")
     return responses
 
@@ -666,9 +785,10 @@ def _extract_response(messages: list[BaseMessage]) -> str:
     return ""
 
 
-async def _polling_for_job(job_id: str, step: cl.Step):
+async def _polling_for_job(job_id: str, step: cl.Step, user_id: Optional[str] = None):
     last_logs = ""
     job_status = ""
+    uid = user_id or cl.user_session.get("user_id") or _get_user_id()
 
     # Apply optional timeout from TASK_TIMEOUT (seconds)
     timeout = float(TASK_TIMEOUT)
@@ -684,11 +804,12 @@ async def _polling_for_job(job_id: str, step: cl.Step):
             ).send()
             return
 
-        # Call tool via agent_runtime (Reuse existing connection)
+        # Call tool via agent_runtime (Reuse existing connection for this user)
         try:
             job = await agent_runtime.call_tool(
                 "get_job_status",
                 {"job_id": job_id},
+                user_id=uid,
             )
             # Extract text
             job_result = json.loads(job.content[0].text)

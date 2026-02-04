@@ -1,0 +1,56 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv
+venv
+ENV
+env
+.eggs
+*.egg-info
+*.egg
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# CDK
+cdk/
+cdk.out/
+
+# Excluded modules (not needed in Docker)
+core/
+mcp_servers/
+code_scout/
+scripts/
+
+# Note: wizelit-sdk/ is NOT excluded - it's copied by deploy_platform.sh
+
+# Data and generated files
+data/
+*.html
+*.mmd
+.removed_mcp_servers.json
+
+# Lock files (we use requirements.txt in Docker)
+uv.lock
+package-lock.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Misc
+*.log
+*.tmp
+*.bak
+activate.sh
+Makefile

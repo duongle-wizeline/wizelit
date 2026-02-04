@@ -46,6 +46,7 @@ def build_graph(
         """
         Truncate message history to keep only the most recent conversation turns.
         Preserves system messages and the last N conversation turns.
+        IMPORTANT: Ensures tool_use/tool_result pairs are kept together for Bedrock compatibility.
         """
         if (
             len(messages) <= MAX_HISTORY_TURNS * 2

@@ -22,20 +22,36 @@ class ToolResponseHandler:
 
     def __init__(self):
         """Initialize handler with tool response metadata."""
-        self._tool_metadata = self._load_tool_metadata()
+        self._tool_metadata: Dict[str, Dict[str, Any]] = {}
+        # Note: Don't load metadata in __init__ since we need user_id context
+        # Metadata will be refreshed when MCP servers connect
 
-    def _load_tool_metadata(self) -> Dict[str, Dict[str, Any]]:
+    def _load_tool_metadata(self, user_id: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
         """
         Load tool response handling metadata from in-memory storage.
 
         Metadata comes from agent code via MCP protocol's meta field.
         It's stored in memory when Chainlit connects to MCP servers.
+        
+        Args:
+            user_id: Optional user ID to load metadata for. If None, loads for ALL users.
         """
         metadata = {}
 
         try:
-            # Get MCP servers from in-memory storage (replaces agents.yaml)
-            agents_config = get_mcp_servers()
+            # Get MCP servers from in-memory storage
+            # If user_id is provided, get only that user's servers
+            # Otherwise, aggregate from ALL users (for backward compatibility)
+            if user_id:
+                agents_config = get_mcp_servers(user_id=user_id)
+            else:
+                # For global refresh (like on startup), get all users' servers
+                from utils.mcp_storage import get_all_user_ids
+                agents_config = {}
+                for uid in get_all_user_ids():
+                    user_servers = get_mcp_servers(user_id=uid)
+                    agents_config.update(user_servers)
+            
             if not agents_config:
                 logger.debug("No MCP servers found in storage")
                 return metadata
@@ -390,11 +406,16 @@ class ToolResponseHandler:
             )
             return None
 
-    def refresh_metadata(self):
-        """Reload tool metadata from in-memory storage."""
-        logger.info("🔄 [Handler] Refreshing tool response metadata from storage")
+    def refresh_metadata(self, user_id: Optional[str] = None):
+        """
+        Reload tool metadata from in-memory storage.
+        
+        Args:
+            user_id: Optional user ID to refresh metadata for. If None, refreshes for all users.
+        """
+        logger.info(f"🔄 [Handler] Refreshing tool response metadata from storage (user_id={user_id})")
         old_tools = set(self._tool_metadata.keys())
-        self._tool_metadata = self._load_tool_metadata()
+        self._tool_metadata = self._load_tool_metadata(user_id=user_id)
         new_tools = set(self._tool_metadata.keys())
         logger.info(
             f"✅ [Handler] Metadata refreshed. Old tools: {old_tools}, New tools: {new_tools}, Added: {new_tools - old_tools}, Removed: {old_tools - new_tools}"
