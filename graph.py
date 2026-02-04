@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import logging
@@ -12,10 +13,55 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
 
-from utils.prompt_guides import prompt_guides, get_prompt_template
 from utils.tool_response_handler import ToolResponseHandler
 
 logger = logging.getLogger(__name__)
+behavior_rules = """
+CRITICAL BEHAVIORAL RULES:
+1) TOOL USAGE IS PURPOSE-DRIVEN: Only call tools when the user's request matches a tool's purpose (as described in the tool's description above). If the request does NOT match any tool's purpose, respond directly using your knowledge (NO tools).
+2) TOOL SELECTION: Read tool descriptions carefully. Choose the tool that best matches the user's request based on its description.
+3) WORK WITH TOOLS THAT REQUIRE EXISTING RESOURCES: If a tool's description says it works with EXISTING resources (e.g., 'refactors EXISTING code', 'analyzes EXISTING codebase'), but the user hasn't provided any existing resources, DO NOT use that tool. Respond directly using your knowledge instead.
+4) PREFER FORMATTED TOOLS: If multiple tools exist for the same purpose, prefer the one that returns formatted human-readable text. Avoid tools marked as '[RAW JSON - DO NOT USE]' or 'Returns raw JSON'.
+5) CLARIFYING QUESTIONS - If the user's request is ambiguous and could match multiple tools, ask a clarifying question to determine the best tool to use before proceeding.
+"""
+
+def get_prompt_template(guides: str) -> str:
+    return (
+        "You are Wizelit, an Engineering Manager assistant.\n"
+        f"{guides}\n"
+        f"{behavior_rules}\n"
+    )
+
+async def generate_tools_guides(tools: Sequence[BaseTool] | None = None) -> str:
+    """Generate prompt guides from in-memory MCP server storage"""
+    n8n_search_workflows = None
+    workflows = []
+
+    guides = "You have access to the following tools:\n" if tools else ""
+    count = 0
+    for tool in tools or []:
+        count += 1
+        guides += f"{count}. Use tool `{tool.name}` for purpose: {tool.description}\n"
+        if tool.name == "search_workflows":
+            n8n_search_workflows = tool
+
+    if n8n_search_workflows:
+        n8n_response = await n8n_search_workflows.ainvoke({})
+
+        data = json.loads(n8n_response[0].get('text', '{}'))
+        workflows = data.get('structuredContent', {}).get('data', [])
+        print(f"\nN8N WORKFLOWS EXTRACTED: {workflows}\n")
+
+        if workflows:
+            guides += "\nThis is the list of N8N workflows:\n"
+            ncount = 0
+            for workflow in workflows:
+                ncount += 1
+                guides += f"{ncount}. Use tool `{workflow['name']}` - id `{workflow['id']}` - for purpose: {workflow.get('description')}\n"
+            guides += "IMPORTANT: To invoke an N8N workflow, use the tool \"execute_workflow\" with the workflow's ID in the tool call.\n"
+
+    return get_prompt_template(guides)
+
 
 # Initialize tool response handler (module-level singleton)
 _tool_response_handler = ToolResponseHandler()
@@ -24,7 +70,7 @@ _tool_response_handler = ToolResponseHandler()
 def _get_current_user_id() -> Optional[str]:
     """
     Try to get the current user ID from Chainlit context.
-    
+
     Returns None if we're not in a Chainlit context (e.g., testing).
     """
     try:
@@ -55,7 +101,6 @@ def _get_current_user_id() -> Optional[str]:
 # A turn = human message + AI response + tool calls/results
 MAX_HISTORY_TURNS = int(os.getenv("MAX_HISTORY_TURNS", "10"))
 
-
 def build_graph(
     llm: BaseLanguageModel,
     tools: Sequence[BaseTool] | None = None,
@@ -75,6 +120,7 @@ def build_graph(
     tool_list = list(tools or [])
     llm_with_tools = llm.bind_tools(tool_list) if tool_list else llm
     memory = MemorySaver()
+    system_message_content = asyncio.run(generate_tools_guides(tools=tools))
 
     def truncate_history(messages: list) -> list:
         """

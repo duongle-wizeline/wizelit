@@ -1,0 +1,40 @@
+{
+    "content": [
+        {
+            "type": "text",
+            "text": "{\"data\":[{\"id\":\"GwOHy4bzeADk3g95MtyFR\",\"name\":\"Get Financial Knowledge\",\"description\":\"This is an AI agent chat about \\\"Finance & Investment Education\\\". To interact with this agent, send a \\\"message\\\" key with user's input. The output is just an \\\"output\\\" key with the response from the agent.\",\"active\":true,\"createdAt\":\"2026-02-02T06:54:45.211Z\",\"updatedAt\":\"2026-02-02T07:31:06.598Z\",\"triggerCount\":1,\"nodes\":[{\"name\":\"Webhook\",\"type\":\"n8n-nodes-base.webhook\"},{\"name\":\"AI Agent\",\"type\":\"@n8n/n8n-nodes-langchain.agent\"},{\"name\":\"AWS Bedrock Chat Model\",\"type\":\"@n8n/n8n-nodes-langchain.lmChatAwsBedrock\"},{\"name\":\"Respond to Webhook\",\"type\":\"n8n-nodes-base.respondToWebhook\"}]}],\"count\":1}"
+        }
+    ],
+    "structuredContent": {
+        "data": [
+            {
+                "id": "GwOHy4bzeADk3g95MtyFR",
+                "name": "Get Financial Knowledge",
+                "description": "This is an AI agent chat about \"Finance & Investment Education\". To interact with this agent, send a \"message\" key with user's input. The output is just an \"output\" key with the response from the agent.",
+                "active": true,
+                "createdAt": "2026-02-02T06:54:45.211Z",
+                "updatedAt": "2026-02-02T07:31:06.598Z",
+                "triggerCount": 1,
+                "nodes": [
+                    {
+                        "name": "Webhook",
+                        "type": "n8n-nodes-base.webhook"
+                    },
+                    {
+                        "name": "AI Agent",
+                        "type": "@n8n/n8n-nodes-langchain.agent"
+                    },
+                    {
+                        "name": "AWS Bedrock Chat Model",
+                        "type": "@n8n/n8n-nodes-langchain.lmChatAwsBedrock"
+                    },
+                    {
+                        "name": "Respond to Webhook",
+                        "type": "n8n-nodes-base.respondToWebhook"
+                    }
+                ]
+            }
+        ],
+        "count": 1
+    }
+}

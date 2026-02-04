@@ -19,7 +19,6 @@ from langchain_core.runnables import RunnableConfig
 from agent import agent_runtime
 from database import DatabaseManager
 from utils import create_chat_settings
-from utils.prompt_guides import refresh_prompt_guides
 from utils.mcp_storage import (
     add_mcp_server,
     remove_mcp_server,
@@ -234,7 +233,6 @@ async def on_mcp(connection, session: ClientSession):
 
     add_mcp_server(server_key, new_connection, user_id=user_id)
     logger.info(f"✅ [Main] Stored MCP server '{connection.name}' for user '{user_id}'")
-    refresh_prompt_guides()
     # Refresh tool response handler metadata for this user
     from utils.tool_response_handler import _tool_response_handler
 
@@ -284,7 +282,6 @@ async def on_mcp_disconnect(name: str, session: ClientSession):
     agent_runtime.invalidate_graph(user_id=user_id)
     logger.info(f"🔄 [Main] Graph invalidated for user '{user_id}' after disconnecting '{name}'")
 
-    refresh_prompt_guides()
     # Refresh tool response handler metadata for this user
     from utils.tool_response_handler import _tool_response_handler
 
