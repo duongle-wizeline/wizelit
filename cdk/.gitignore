@@ -1,6 +1,9 @@
 # CDK output
 cdk.out/
 
+# CDK context cache (contains AWS account IDs, regenerates automatically)
+cdk.context.json
+
 # Python virtual environment
 .venv/
 venv/
