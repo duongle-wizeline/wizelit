@@ -169,21 +169,21 @@ class AgentRuntime:
                 print(f"ℹ️  [Agent] Using streamable-http transport for {label}")
 
                 try:
-                # Use streamable-http client
+                    # Use streamable-http client
                     streamable_http = await exit_stack.enter_async_context(
-                    streamablehttp_client(url=url)
-                )
-                read_stream, write_stream, get_session_id = streamable_http
+                        streamablehttp_client(url=url)
+                    )
+                    read_stream, write_stream, get_session_id = streamable_http
                     session = await exit_stack.enter_async_context(
-                    ClientSession(read_stream, write_stream)
-                )
-                await session.initialize()
+                        ClientSession(read_stream, write_stream)
+                    )
+                    await session.initialize()
                 except Exception as e:
                     raise MCPConnectionError(label, url, str(e))
 
                 try:
-                tools = await load_mcp_tools(session)
-                if not tools:
+                    tools = await load_mcp_tools(session)
+                    if not tools:
                         raise MCPToolLoadError(
                             label, "Server connected but returned no tools"
                         )
