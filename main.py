@@ -182,12 +182,12 @@ async def on_mcp(connection, session: ClientSession):
     # The cooldown prevents Chainlit auto-reconnect from immediately re-adding removed servers
     if is_server_removed(server_key, user_id=user_id):
         remaining = get_removal_cooldown_remaining(server_key, user_id=user_id)
-            logger.warning(
+        logger.warning(
             f"🚫 [Main] Rejecting reconnect to '{connection.name}' for user '{user_id}' - server is in removal cooldown ({remaining:.0f}s remaining)"
-            )
-            # Don't add to storage, don't rebuild graph
-            # The connection will be established by Chainlit, but we won't use it
-            return
+        )
+        # Don't add to storage, don't rebuild graph
+        # The connection will be established by Chainlit, but we won't use it
+        return
 
     # List available tools
     result = await session.list_tools()
@@ -415,10 +415,10 @@ async def main(message: cl.Message):
                         content="⚠️ **Connection Recovered:** MCP server connection was restored. Please try your query again."
                     ).send()
                 except GraphBuildError as rebuild_error:
-                await cl.Message(
+                    await cl.Message(
                         content=f"⚠️ **Connection Error:** The MCP server connection was interrupted.\n\n{rebuild_error.suggestion}"
-                ).send()
-                return
+                    ).send()
+                    return
             else:
                 # Re-raise to be caught by outer exception handler
                 raise
@@ -451,95 +451,95 @@ async def main(message: cl.Message):
         # Then handle job responses (these are long-running and will return early)
         for idx, response_text in enumerate(job_responses, 1):
             logger.info(f"📤 [Main] Handling job response {idx}/{len(job_responses)}: {response_text[:100]}...")
-        job_match = re.search(r"JOB_ID:\s*(JOB-[\w-]+)", response_text)
+            job_match = re.search(r"JOB_ID:\s*(JOB-[\w-]+)", response_text)
 
-        if job_match:
-            job_id = job_match.group(1)
-            await cl.Message(
-                content=f"👨‍✈️ **Captain:** Dispatching Crew... (ID: `{job_id}`)"
-            ).send()
+            if job_match:
+                job_id = job_match.group(1)
+                await cl.Message(
+                    content=f"👨‍✈️ **Captain:** Dispatching Crew... (ID: `{job_id}`)"
+                ).send()
 
-            async with cl.Step(name="Refactoring Crew", type="run") as step:
-                step.input = "Initializing Agent Swarm..."
-                await step.update()
+                async with cl.Step(name="Refactoring Crew", type="run") as step:
+                    step.input = "Initializing Agent Swarm..."
+                    await step.update()
 
-                # Check if streaming is enabled
-                enable_streaming = (
-                    os.getenv("ENABLE_LOG_STREAMING", "true").lower() == "true"
-                )
+                    # Check if streaming is enabled
+                    enable_streaming = (
+                        os.getenv("ENABLE_LOG_STREAMING", "true").lower() == "true"
+                    )
 
-                if enable_streaming:
-                    # Real-time streaming via Redis
-                    try:
+                    if enable_streaming:
+                        # Real-time streaming via Redis
+                        try:
                             from wizelit_sdk.agent_wrapper.streaming import LogStreamer
 
-                        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
-                        log_streamer = LogStreamer(redis_url)
+                            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+                            log_streamer = LogStreamer(redis_url)
 
-                        accumulated_logs = []
-                        timeout = float(os.getenv("LOG_STREAM_TIMEOUT_SECONDS", "300"))
+                            accumulated_logs = []
+                            timeout = float(os.getenv("LOG_STREAM_TIMEOUT_SECONDS", "300"))
 
-                        try:
-                            async for log_event in log_streamer.subscribe_logs(
-                                job_id, timeout=timeout
-                            ):
-                                # Handle log messages
-                                if "message" in log_event:
-                                    ts = log_event.get("timestamp", "")[:8]  # HH:MM:SS
-                                    level = log_event.get("level", "INFO")
-                                    msg = log_event.get("message", "")
-                                    formatted = f"[{level}] [{ts}] {msg}"
-                                    accumulated_logs.append(formatted)
+                            try:
+                                async for log_event in log_streamer.subscribe_logs(
+                                    job_id, timeout=timeout
+                                ):
+                                    # Handle log messages
+                                    if "message" in log_event:
+                                        ts = log_event.get("timestamp", "")[:8]  # HH:MM:SS
+                                        level = log_event.get("level", "INFO")
+                                        msg = log_event.get("message", "")
+                                        formatted = f"[{level}] [{ts}] {msg}"
+                                        accumulated_logs.append(formatted)
 
-                                    # Update UI with latest logs
-                                    step.output = "\n".join(
-                                        accumulated_logs[-25:]
-                                    )  # Show last 25 lines
-                                    await step.update()
+                                        # Update UI with latest logs
+                                        step.output = "\n".join(
+                                            accumulated_logs[-25:]
+                                        )  # Show last 25 lines
+                                        await step.update()
 
-                                # Handle status changes
-                                if "status" in log_event:
-                                    status = log_event["status"]
+                                    # Handle status changes
+                                    if "status" in log_event:
+                                        status = log_event["status"]
 
-                                    if status == "completed":
-                                        tool_result = log_event.get("result")
-                                        # Delegate handling to helper function; if it returns True, we should return from main.
-                                        if await _handle_tool_result(tool_result):
+                                        if status == "completed":
+                                            tool_result = log_event.get("result")
+                                            # Delegate handling to helper function; if it returns True, we should return from main.
+                                            if await _handle_tool_result(tool_result):
+                                                return
+
+                                        elif status == "failed":
+                                            error = log_event.get("error", "Unknown error")
+                                            await cl.Message(
+                                                content=f"❌ **Job Failed:** {error}"
+                                            ).send()
                                             return
 
-                                    elif status == "failed":
-                                        error = log_event.get("error", "Unknown error")
-                                        await cl.Message(
-                                            content=f"❌ **Job Failed:** {error}"
-                                        ).send()
-                                        return
+                            except asyncio.TimeoutError:
+                                await cl.Message(
+                                    content="⏱️ Job is still running. Check back later."
+                                ).send()
+                                return
 
-                        except asyncio.TimeoutError:
+                            finally:
+                                await log_streamer.close()
+
+                        except ImportError:
+                            logger.warning("Redis not available, falling back to polling")
+                            enable_streaming = False
+
+                        except Exception as e:
+                            logger.error(f"Streaming error: {e}", exc_info=True)
                             await cl.Message(
-                                content="⏱️ Job is still running. Check back later."
+                                content=f"⚠️ Streaming unavailable, falling back to polling: {e}"
                             ).send()
-                            return
+                            enable_streaming = False
 
-                        finally:
-                            await log_streamer.close()
-
-                    except ImportError:
-                        logger.warning("Redis not available, falling back to polling")
-                        enable_streaming = False
-
-                    except Exception as e:
-                        logger.error(f"Streaming error: {e}", exc_info=True)
-                        await cl.Message(
-                            content=f"⚠️ Streaming unavailable, falling back to polling: {e}"
-                        ).send()
-                        enable_streaming = False
-
-                # Fallback to polling if streaming is disabled or failed
-                if not enable_streaming:
+                    # Fallback to polling if streaming is disabled or failed
+                    if not enable_streaming:
                         await _polling_for_job(job_id, step, user_id=user_id)
                     # Job handling is complete, return
                     return
-        else:
+            else:
                 # Not a job response, send the message and continue to next response
                 await cl.Message(content=response_text).send()
                 continue
@@ -548,30 +548,30 @@ async def main(message: cl.Message):
         if not all_responses:
             response_text = _extract_response(result.get("messages", []))
             if response_text:
-            try:
-                # Try to parse response as JSON
-                response_json = json.loads(response_text)
+                try:
+                    # Try to parse response as JSON
+                    response_json = json.loads(response_text)
 
-                if "status" in response_json:
-                    if response_json["status"] == "completed":
-                        tool_result = response_json["result"]
+                    if "status" in response_json:
+                        if response_json["status"] == "completed":
+                            tool_result = response_json["result"]
 
-                        # Delegate handling to helper function; if it returns True, we should return from main.
-                        if await _handle_tool_result(tool_result):
+                            # Delegate handling to helper function; if it returns True, we should return from main.
+                            if await _handle_tool_result(tool_result):
+                                return
+
+                        if response_json["status"] == "failed":
+                            await cl.Message(content="❌ **Job Failed.**").send()
                             return
 
-                    if response_json["status"] == "failed":
-                        await cl.Message(content="❌ **Job Failed.**").send()
-                        return
-
-                    if "logs" in response_json:
-                        await cl.Message(content=response_json["logs"]).send()
-                        return
-                else:
+                        if "logs" in response_json:
+                            await cl.Message(content=response_json["logs"]).send()
+                            return
+                    else:
+                        await cl.Message(content=response_text).send()
+                except json.JSONDecodeError:
+                    # Fallback to plain text response
                     await cl.Message(content=response_text).send()
-            except json.JSONDecodeError:
-                # Fallback to plain text response
-                await cl.Message(content=response_text).send()
 
     except Exception as e:
         logger.exception("Error in main loop")
