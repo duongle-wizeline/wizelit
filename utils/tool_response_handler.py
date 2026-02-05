@@ -6,6 +6,10 @@ eliminating the need for hardcoded tool-specific logic in graph.py.
 
 Metadata is defined in agent code via WizelitAgent's @mcp.ingest()
 decorator and exposed via MCP protocol's meta field.
+
+MULTI-USER SUPPORT:
+- Tool metadata is stored per-user to prevent cross-user interference
+- Each user has their own isolated tool metadata cache
 """
 
 import json
@@ -21,21 +25,39 @@ class ToolResponseHandler:
     """Handles tool responses based on metadata from agent code (via MCP protocol)."""
 
     def __init__(self):
-        """Initialize handler with tool response metadata."""
-        self._tool_metadata = self._load_tool_metadata()
+        """Initialize handler with per-user tool response metadata."""
+        # Per-user metadata storage to prevent cross-user interference
+        # Structure: user_id -> tool_name -> metadata
+        self._user_tool_metadata: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        # Note: Don't load metadata in __init__ since we need user_id context
+        # Metadata will be refreshed when MCP servers connect
 
-    def _load_tool_metadata(self) -> Dict[str, Dict[str, Any]]:
+    def _load_tool_metadata(self, user_id: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
         """
         Load tool response handling metadata from in-memory storage.
 
         Metadata comes from agent code via MCP protocol's meta field.
         It's stored in memory when Chainlit connects to MCP servers.
+
+        Args:
+            user_id: Optional user ID to load metadata for. If None, loads for ALL users.
         """
         metadata = {}
 
         try:
-            # Get MCP servers from in-memory storage (replaces agents.yaml)
-            agents_config = get_mcp_servers()
+            # Get MCP servers from in-memory storage
+            # If user_id is provided, get only that user's servers
+            # Otherwise, aggregate from ALL users (for backward compatibility)
+            if user_id:
+                agents_config = get_mcp_servers(user_id=user_id)
+            else:
+                # For global refresh (like on startup), get all users' servers
+                from utils.mcp_storage import get_all_user_ids
+                agents_config = {}
+                for uid in get_all_user_ids():
+                    user_servers = get_mcp_servers(user_id=uid)
+                    agents_config.update(user_servers)
+
             if not agents_config:
                 logger.debug("No MCP servers found in storage")
                 return metadata
@@ -224,40 +246,50 @@ class ToolResponseHandler:
             else:
                 return str(content)
 
-    def should_handle_directly(self, tool_name: str) -> bool:
+    def _get_user_metadata(self, user_id: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+        """Get metadata for a specific user."""
+        from utils.mcp_storage import DEFAULT_USER_ID
+        uid = user_id or DEFAULT_USER_ID
+        return self._user_tool_metadata.get(uid, {})
+
+    def should_handle_directly(self, tool_name: str, user_id: Optional[str] = None) -> bool:
         """
         Check if tool should be handled directly (skip LLM processing).
 
         Args:
             tool_name: Name of the tool
+            user_id: Optional user ID for per-user metadata lookup
 
         Returns:
             True if tool should be handled directly, False otherwise
         """
-        metadata = self._tool_metadata.get(tool_name, {})
+        user_metadata = self._get_user_metadata(user_id)
+        metadata = user_metadata.get(tool_name, {})
         mode = metadata.get("mode", "default")
         should_handle = mode in ("direct", "formatted")
         logger.info(
-            f"🔍 [Handler] should_handle_directly({tool_name}): metadata={metadata}, mode={mode}, should_handle={should_handle}"
+            f"🔍 [Handler] should_handle_directly({tool_name}, user={user_id}): metadata={metadata}, mode={mode}, should_handle={should_handle}"
         )
-        if tool_name not in self._tool_metadata:
+        if tool_name not in user_metadata:
             logger.warning(
-                f"⚠️ [Handler] Tool '{tool_name}' not found in metadata. Available tools: {list(self._tool_metadata.keys())}"
+                f"⚠️ [Handler] Tool '{tool_name}' not found in metadata for user '{user_id}'. Available tools: {list(user_metadata.keys())}"
             )
         return should_handle
 
-    def handle_tool_response(self, message: ToolMessage) -> Optional[AIMessage]:
+    def handle_tool_response(self, message: ToolMessage, user_id: Optional[str] = None) -> Optional[AIMessage]:
         """
         Handle tool response based on metadata configuration.
 
         Args:
             message: ToolMessage from tool execution
+            user_id: Optional user ID for per-user metadata lookup
 
         Returns:
             AIMessage if handled directly, None if should use default processing
         """
         tool_name = message.name
-        metadata = self._tool_metadata.get(tool_name, {})
+        user_metadata = self._get_user_metadata(user_id)
+        metadata = user_metadata.get(tool_name, {})
 
         # Default mode: let LLM process normally
         if not metadata or metadata.get("mode", "default") == "default":
@@ -390,25 +422,57 @@ class ToolResponseHandler:
             )
             return None
 
-    def refresh_metadata(self):
-        """Reload tool metadata from in-memory storage."""
-        logger.info("🔄 [Handler] Refreshing tool response metadata from storage")
-        old_tools = set(self._tool_metadata.keys())
-        self._tool_metadata = self._load_tool_metadata()
-        new_tools = set(self._tool_metadata.keys())
+    def refresh_metadata(self, user_id: Optional[str] = None):
+        """
+        Reload tool metadata from in-memory storage for a specific user.
+
+        Args:
+            user_id: User ID to refresh metadata for. Required for per-user isolation.
+        """
+        from utils.mcp_storage import DEFAULT_USER_ID
+        uid = user_id or DEFAULT_USER_ID
+
+        logger.info(f"🔄 [Handler] Refreshing tool response metadata from storage (user_id={uid})")
+
+        old_tools = set(self._user_tool_metadata.get(uid, {}).keys())
+        new_metadata = self._load_tool_metadata(user_id=uid)
+        self._user_tool_metadata[uid] = new_metadata
+        new_tools = set(new_metadata.keys())
+
         logger.info(
-            f"✅ [Handler] Metadata refreshed. Old tools: {old_tools}, New tools: {new_tools}, Added: {new_tools - old_tools}, Removed: {old_tools - new_tools}"
+            f"✅ [Handler] Metadata refreshed for user '{uid}'. Old tools: {old_tools}, New tools: {new_tools}, Added: {new_tools - old_tools}, Removed: {old_tools - new_tools}"
         )
         # Log all tools with direct mode
         direct_tools = {
             name: meta
-            for name, meta in self._tool_metadata.items()
+            for name, meta in new_metadata.items()
             if meta.get("mode") in ("direct", "formatted")
         }
         logger.info(
-            f"📋 [Handler] Tools with direct/formatted mode: {list(direct_tools.keys())}"
+            f"📋 [Handler] Tools with direct/formatted mode for user '{uid}': {list(direct_tools.keys())}"
         )
+
+    def clear_user_metadata(self, user_id: str) -> None:
+        """
+        Clear metadata for a specific user (e.g., when user disconnects all servers).
+
+        Args:
+            user_id: User ID to clear metadata for
+        """
+        if user_id in self._user_tool_metadata:
+            del self._user_tool_metadata[user_id]
+            logger.info(f"🧹 [Handler] Cleared metadata for user '{user_id}'")
 
 
 # Module-level singleton for efficiency
 _tool_response_handler = ToolResponseHandler()
+
+# Register cleanup callback to sync with mcp_storage cleanup
+# This ensures handler metadata is cleaned up when users become inactive
+def _on_user_cleanup(user_id: str) -> None:
+    """Callback to clear handler metadata when a user is cleaned up."""
+    _tool_response_handler.clear_user_metadata(user_id)
+
+# Register the callback with mcp_storage
+from utils.mcp_storage import register_cleanup_callback
+register_cleanup_callback(_on_user_cleanup)

@@ -3,6 +3,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# MCP server runtime files
+.removed_mcp_servers.json
+
 # C extensions
 *.so
 
