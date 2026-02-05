@@ -218,7 +218,9 @@ class WizelitStack(Stack):
             "RedisCluster",
             cache_node_type="cache.t3.micro",
             engine="redis",
-            engine_version="7.0",  # Match docker-compose.yml (redis:7-alpine)
+            # Note: Don't specify engine_version to keep the current version
+            # AWS doesn't allow downgrading Redis versions
+            # Current deployed version: 7.1.0
             num_cache_nodes=1,
             cluster_name="wizelit-redis",
             vpc_security_group_ids=[redis_security_group.security_group_id],
@@ -457,6 +459,7 @@ class WizelitStack(Stack):
             iam.PolicyStatement(
                 effect=iam.Effect.ALLOW,
                 actions=[
+                    "ecs:ListServices",  # Required to discover service name
                     "ecs:UpdateService",
                     "ecs:DescribeServices",
                     "ecs:DescribeTaskDefinition",
