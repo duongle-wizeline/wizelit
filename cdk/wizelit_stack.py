@@ -40,6 +40,21 @@ class WizelitStack(Stack):
 
         # ======================================================================
         # VPC - Cost optimized (no NAT Gateway for dev)
+        #
+        # NETWORK ARCHITECTURE:
+        # - Public subnets: ALB (internet-facing) + ECS (with public IP)
+        # - Private isolated subnets: RDS + Redis (internal only)
+        #
+        # WHY NO NAT GATEWAY:
+        # - ECS tasks are in PUBLIC subnets with assign_public_ip=True
+        #   This allows them to access internet (ECR, Bedrock, etc.) directly
+        # - RDS and Redis don't need internet access (internal only)
+        # - NAT Gateway costs ~$45/month, which is expensive for dev
+        #
+        # PRODUCTION RECOMMENDATION:
+        # - Move ECS to PRIVATE_WITH_EGRESS subnets
+        # - Add NAT Gateway (nat_gateways=1 or 2)
+        # - Or use VPC endpoints for ECR/Bedrock (cheaper than NAT)
         # ======================================================================
         vpc = ec2.Vpc(
             self,
@@ -52,6 +67,8 @@ class WizelitStack(Stack):
                     name="Public",
                     subnet_type=ec2.SubnetType.PUBLIC,
                 ),
+                # Private isolated subnets for RDS and Redis
+                # These resources don't need internet access
                 ec2.SubnetConfiguration(
                     cidr_mask=24,
                     name="Private",
@@ -184,6 +201,7 @@ class WizelitStack(Stack):
 
         # ======================================================================
         # ElastiCache Redis - cache.t3.micro
+        # Matches docker-compose.yml Redis 7 for local/remote parity
         # ======================================================================
         redis_subnet_group = elasticache.CfnSubnetGroup(
             self,
@@ -200,6 +218,7 @@ class WizelitStack(Stack):
             "RedisCluster",
             cache_node_type="cache.t3.micro",
             engine="redis",
+            engine_version="7.0",  # Match docker-compose.yml (redis:7-alpine)
             num_cache_nodes=1,
             cluster_name="wizelit-redis",
             vpc_security_group_ids=[redis_security_group.security_group_id],
@@ -349,6 +368,12 @@ class WizelitStack(Stack):
 
         # ======================================================================
         # ECS Service
+        #
+        # NOTE: ECS runs in PUBLIC subnets with public IP assignment.
+        # This is a cost-optimized approach for dev environments:
+        # - No NAT Gateway needed (~$45/month savings)
+        # - Tasks can still access ECR, Bedrock, and other AWS services
+        # - For production, consider moving to private subnets with NAT Gateway
         # ======================================================================
         ecs_service = ecs.FargateService(
             self,
@@ -356,7 +381,7 @@ class WizelitStack(Stack):
             cluster=cluster,
             task_definition=task_definition,
             desired_count=0,  # Start with 0 - deploy image first, then scale up
-            assign_public_ip=True,  # Required since no NAT Gateway
+            assign_public_ip=True,  # Required for internet access without NAT Gateway
             security_groups=[ecs_security_group],
             vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PUBLIC),
             circuit_breaker=ecs.DeploymentCircuitBreaker(rollback=True),

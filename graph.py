@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Iterable, Sequence
+import logging
+from typing import Iterable, Sequence, Optional
 
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.messages import SystemMessage, AIMessage, ToolMessage
@@ -14,8 +15,41 @@ from langgraph.prebuilt import ToolNode
 from utils.prompt_guides import prompt_guides, get_prompt_template
 from utils.tool_response_handler import ToolResponseHandler
 
+logger = logging.getLogger(__name__)
+
 # Initialize tool response handler (module-level singleton)
 _tool_response_handler = ToolResponseHandler()
+
+
+def _get_current_user_id() -> Optional[str]:
+    """
+    Try to get the current user ID from Chainlit context.
+    
+    Returns None if we're not in a Chainlit context (e.g., testing).
+    """
+    try:
+        import chainlit as cl
+        session = cl.context.session
+        if session:
+            # Try stored user_id first
+            stored_id = cl.user_session.get("user_id")
+            if stored_id:
+                return stored_id
+            # Try user object
+            if hasattr(session, 'user') and session.user:
+                user = session.user
+                if hasattr(user, 'identifier') and user.identifier:
+                    return user.identifier
+                if hasattr(user, 'id') and user.id:
+                    return user.id
+            # Try client_id or session.id
+            if hasattr(session, 'client_id') and session.client_id:
+                return session.client_id
+            if hasattr(session, 'id') and session.id:
+                return session.id
+    except Exception as e:
+        logger.debug(f"Could not get user_id from Chainlit context: {e}")
+    return None
 
 # Maximum number of conversation turns to keep in history
 # A turn = human message + AI response + tool calls/results
@@ -854,10 +888,14 @@ def build_graph(
                 f"✅ [Graph] Tool outputs detected with content. Attempting to show directly."
             )
 
+            # Get current user ID for per-user metadata lookup
+            current_user_id = _get_current_user_id()
+            print(f"🔍 [Graph] Current user_id: {current_user_id}")
+
             # Try handler first (for proper formatting if metadata is available)
             # Force refresh metadata before checking to ensure it's up to date
             # This ensures metadata is fresh even if servers were added via UI
-            handler.refresh_metadata()
+            handler.refresh_metadata(user_id=current_user_id)
             handler_worked = False
             for message in tool_messages:
                 if isinstance(message, ToolMessage):
@@ -867,7 +905,7 @@ def build_graph(
                         f"🔍 [Graph] Tool message content type: {type(message.content)}, preview: {str(message.content)[:200]}"
                     )
 
-                    should_handle = handler.should_handle_directly(tool_name)
+                    should_handle = handler.should_handle_directly(tool_name, user_id=current_user_id)
                     print(
                         f"🔍 [Graph] Tool: {tool_name}, should_handle_directly: {should_handle}"
                     )
@@ -876,7 +914,7 @@ def build_graph(
                         print(
                             f"🔧 [Graph] Tool {tool_name} should be handled directly. Using handler."
                         )
-                        response = handler.handle_tool_response(message)
+                        response = handler.handle_tool_response(message, user_id=current_user_id)
                         if (
                             response
                             and response.content
