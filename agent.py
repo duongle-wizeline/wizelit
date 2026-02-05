@@ -216,19 +216,19 @@ class AgentRuntime:
 
             try:
                 sse = await exit_stack.enter_async_context(
-                sse_client(url=url, timeout=600.0)
-            )
-            read_stream, write_stream = sse
+                    sse_client(url=url, timeout=600.0)
+                )
+                read_stream, write_stream = sse
                 session = await exit_stack.enter_async_context(
-                ClientSession(read_stream, write_stream)
-            )
-            await session.initialize()
+                    ClientSession(read_stream, write_stream)
+                )
+                await session.initialize()
             except Exception as e:
                 raise MCPConnectionError(label, url, str(e))
 
             try:
-            tools = await load_mcp_tools(session)
-            if not tools:
+                tools = await load_mcp_tools(session)
+                if not tools:
                     raise MCPToolLoadError(
                         label, "Server connected but returned no tools"
                     )
