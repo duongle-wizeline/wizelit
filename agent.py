@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import warnings
@@ -7,8 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import asyncio
-from contextlib import AsyncExitStack, suppress
-import subprocess
+from contextlib import AsyncExitStack
 from langchain_aws import ChatBedrock
 from mcp.client.session import ClientSession
 from mcp.client.sse import sse_client
@@ -115,10 +115,10 @@ class AgentRuntime:
     Agent runtime that supports per-user graphs.
     Each user gets their own isolated graph with their own MCP server connections.
     """
-    
+
     # Default user ID for backward compatibility
     DEFAULT_USER_ID = "__default__"
-    
+
     def __init__(self) -> None:
         # Per-user storage: user_id -> data
         self._graphs: Dict[str, Any] = {}
@@ -135,7 +135,7 @@ class AgentRuntime:
     async def _rebuild_graph(self, user_id: Optional[str] = None) -> None:
         """Rebuild the graph with current tools from in-memory storage for a specific user"""
         uid = user_id or self.DEFAULT_USER_ID
-        
+
         # Only rebuild if graph doesn't exist yet for this user
         # If graph exists, we should not rebuild it here - use rebuild_graph() explicitly
         if uid in self._graphs and self._graphs[uid] is not None:
@@ -181,50 +181,22 @@ class AgentRuntime:
                 except Exception as e:
                     raise MCPConnectionError(label, url, str(e))
 
+            else:
+                # Default to SSE connection for other servers
+                if not is_sse:
+                    print(f"ℹ️  [Agent] Using SSE transport for {label} (default)")
+
                 try:
-                    tools = await load_mcp_tools(session)
-                    if not tools:
-                        raise MCPToolLoadError(
-                            label, "Server connected but returned no tools"
-                        )
+                    sse = await exit_stack.enter_async_context(
+                        sse_client(url=url, timeout=600.0)
+                    )
+                    read_stream, write_stream = sse
+                    session = await exit_stack.enter_async_context(
+                        ClientSession(read_stream, write_stream)
+                    )
+                    await session.initialize()
                 except Exception as e:
-                    if isinstance(e, MCPToolLoadError):
-                        raise
-                    raise MCPToolLoadError(label, str(e))
-
-                print(
-                    f"✅ [Agent] Tools Loaded from {label}: {[t.name for t in tools]}"
-                )
-
-                # Add tools, skipping duplicates
-                for t in tools:
-                    if t.name in seen_tool_names:
-                        print(
-                            f"⚠️ [Agent] Duplicate tool name '{t.name}' from {label}. Skipping duplicate."
-                        )
-                        continue
-                    seen_tool_names.add(t.name)
-                    tools_all.append(t)
-                    self._tool_sessions[uid][t.name] = session
-
-                self._sessions[uid][label] = session
-                return
-
-            # Default to SSE connection for other servers
-            if not is_sse:
-                print(f"ℹ️  [Agent] Using SSE transport for {label} (default)")
-
-            try:
-                sse = await exit_stack.enter_async_context(
-                    sse_client(url=url, timeout=600.0)
-                )
-                read_stream, write_stream = sse
-                session = await exit_stack.enter_async_context(
-                    ClientSession(read_stream, write_stream)
-                )
-                await session.initialize()
-            except Exception as e:
-                raise MCPConnectionError(label, url, str(e))
+                    raise MCPConnectionError(label, url, str(e))
 
             try:
                 tools = await load_mcp_tools(session)
@@ -232,6 +204,19 @@ class AgentRuntime:
                     raise MCPToolLoadError(
                         label, "Server connected but returned no tools"
                     )
+
+                if "n8n" in label.lower():
+                    print(f"ℹ️  [Agent] Detected N8N MCP server at {label}")
+                    n8n_workflows = []
+                    for tool in tools or []:
+                        if tool.name == "search_workflows":
+                            n8n_response = await tool.ainvoke({})
+                            data = json.loads(n8n_response[0].get('text', '{}'))
+                            n8n_workflows = data.get('structuredContent', {}).get('data', [])
+
+                    if n8n_workflows:
+                        tools.extend(n8n_workflows)
+                        print(f"✅ [Agent] Loaded {len(n8n_workflows)} workflows from N8N MCP server at {label}")
             except Exception as e:
                 if isinstance(e, MCPToolLoadError):
                     raise
@@ -268,6 +253,19 @@ class AgentRuntime:
                 print(
                     f"✅ [Agent] Tools Loaded from {label}: {[t.name for t in tools]}"
                 )
+
+                if "n8n" in label.lower():
+                    print(f"ℹ️  [Agent] Detected N8N MCP server at {label}")
+                    n8n_workflows = []
+                    for tool in tools or []:
+                        if tool.name == "search_workflows":
+                            n8n_response = await tool.ainvoke({})
+                            data = json.loads(n8n_response[0].get('text', '{}'))
+                            n8n_workflows = data.get('structuredContent', {}).get('data', [])
+
+                    if n8n_workflows:
+                        tools.extend(n8n_workflows)
+                        print(f"✅ [Agent] Loaded {len(n8n_workflows)} workflows from N8N MCP server at {label}")
 
                 # Add tools, skipping duplicates
                 for t in tools:
@@ -357,7 +355,7 @@ class AgentRuntime:
     async def _do_rebuild_graph(self, user_id: Optional[str] = None) -> None:
         """Internal method that performs the actual rebuild for a user"""
         uid = user_id or self.DEFAULT_USER_ID
-        
+
         # Close existing MCP connections for this user if any
         if uid in self._graphs and self._graphs[uid] is not None:
             # Store old exit stack and sessions for this user
@@ -439,11 +437,11 @@ class AgentRuntime:
     async def call_tool(self, name: str, arguments: Dict[str, Any], user_id: Optional[str] = None) -> Any:
         uid = user_id or self.DEFAULT_USER_ID
         user_tool_sessions = self._tool_sessions.get(uid, {})
-        
+
         if not user_tool_sessions:
             await self.ensure_ready(user_id=uid)
             user_tool_sessions = self._tool_sessions.get(uid, {})
-            
+
         session = user_tool_sessions.get(name)
         if not session:
             raise ValueError(
