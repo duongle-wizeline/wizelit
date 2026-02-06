@@ -339,6 +339,12 @@ class WizelitStack(Stack):
                 "CHAINLIT_AUTH_SECRET": ecs.Secret.from_secrets_manager(
                     app_secret, "CHAINLIT_AUTH_SECRET"
                 ),
+                "OAUTH_GOOGLE_CLIENT_ID": ecs.Secret.from_secrets_manager(
+                    app_secret, "OAUTH_GOOGLE_CLIENT_ID"
+                ),
+                "OAUTH_GOOGLE_CLIENT_SECRET": ecs.Secret.from_secrets_manager(
+                    app_secret, "OAUTH_GOOGLE_CLIENT_SECRET"
+                ),
             },
             port_mappings=[ecs.PortMapping(container_port=8000)],
             health_check=ecs.HealthCheck(
