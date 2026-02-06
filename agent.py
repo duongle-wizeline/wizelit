@@ -314,22 +314,22 @@ class AgentRuntime:
 
             # Bedrock LLM
             try:
-            region = normalize_aws_env(default_region="us-east-1")
-            model_id = resolve_bedrock_model_id()
+                region = normalize_aws_env(default_region="us-east-1")
+                model_id = resolve_bedrock_model_id()
             except Exception as e:
                 raise ConfigurationError("AWS Bedrock configuration", str(e))
 
             try:
-            llm = ChatBedrock(
+                llm = ChatBedrock(
                     model=model_id,
-                model_kwargs={"temperature": 0},
+                    model_kwargs={"temperature": 0},
                     region=region,
                 )
             except Exception as e:
                 raise ConfigurationError(
                     "AWS Bedrock LLM initialization",
                     f"Failed to initialize ChatBedrock with model_id={model_id}, region={region}. {str(e)}"
-            )
+                )
 
             try:
                 self._graphs[uid] = build_graph(llm=llm, tools=tools_all)
