@@ -9,6 +9,8 @@ import re
 from typing import Dict, Optional, cast
 from pathlib import Path
 from mcp import ClientSession
+from fastapi import Request
+from fastapi.responses import JSONResponse
 
 import chainlit as cl
 from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
@@ -109,6 +111,159 @@ async def health_check():
     return {"status": "healthy", "service": "wizelit"}
 
 
+@cl.server.app.post("/api/mcp/test-connection")
+async def test_mcp_connection(request: Request):
+    """
+    Test endpoint to manually test MCP server connection with headers.
+    This helps diagnose why Chainlit might not be connecting.
+    
+    Usage:
+    POST /api/mcp/test-connection
+    {
+        "url": "https://andien-wl.app.n8n.cloud/mcp-server/http",
+        "headers": {"Authorization": "Bearer TOKEN"},
+        "name": "n8n-mcp"
+    }
+    """
+    from fastapi import Response
+    from fastapi.responses import JSONResponse
+    
+    try:
+        from mcp.client.streamable_http import streamablehttp_client
+        from mcp.client.session import ClientSession
+        
+        data = await request.json()
+        url = data.get("url")
+        headers = data.get("headers", {})
+        name = data.get("name", "test-server")
+        
+        if not url:
+            return JSONResponse(status_code=400, content={"error": "URL is required"})
+        
+        logger.info(f"🧪 [Test] Testing connection to {name} at {url} with headers: {list(headers.keys())}")
+        
+        try:
+            async with streamablehttp_client(url=url, headers=headers if headers else None) as (read, write, get_session_id):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    result = await session.list_tools()
+                    tools = [t.name for t in result.tools]
+                    logger.info(f"✅ [Test] Connection successful! Found {len(tools)} tools: {tools}")
+                    return JSONResponse(content={
+                        "status": "success",
+                        "tools": tools,
+                        "tool_count": len(tools)
+                    })
+        except Exception as e:
+            logger.error(f"❌ [Test] Connection failed: {e}")
+            logger.exception("Full error traceback:")
+            return JSONResponse(status_code=500, content={
+                "status": "error",
+                "error": str(e),
+                "error_type": type(e).__name__
+            })
+    except Exception as e:
+        logger.error(f"❌ [Test] Test endpoint error: {e}")
+        logger.exception("Full error traceback:")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@cl.server.app.get("/api/user-id")
+async def get_current_user_id():
+    """
+    Get the current user ID. Useful for debugging and for adding MCP servers
+    for the correct user.
+    """
+    try:
+        user_id = _get_user_id()
+        return JSONResponse(content={
+            "user_id": user_id,
+            "source": "from_context"
+        })
+    except Exception as e:
+        return JSONResponse(status_code=500, content={
+            "error": str(e),
+            "default_user_id": agent_runtime.DEFAULT_USER_ID
+        })
+
+
+@cl.server.app.post("/api/mcp/manual-add")
+async def manual_add_mcp_server(request: Request):
+    """
+    Manually add an MCP server to storage, bypassing Chainlit's connection.
+    This is a workaround if Chainlit can't connect due to header issues.
+    
+    Usage:
+    POST /api/mcp/manual-add
+    {
+        "name": "n8n-mcp",
+        "url": "https://andien-wl.app.n8n.cloud/mcp-server/http",
+        "headers": {"Authorization": "Bearer TOKEN"},
+        "user_id": "optional-user-id"  // If not provided, will try to get from context
+    }
+    
+    Note: If called via curl (no Chainlit context), you should provide user_id
+    or it will use the default. To find your actual user_id, first call GET /api/user-id
+    from within the Chainlit app (in browser console or via a message).
+    """
+    
+    try:
+        data = await request.json()
+        name = data.get("name")
+        url = data.get("url")
+        headers = data.get("headers", {})
+        user_id = data.get("user_id")  # Optional, will use _get_user_id() if not provided
+        
+        if not name or not url:
+            return JSONResponse(status_code=400, content={"error": "name and url are required"})
+        
+        if not user_id:
+            try:
+                user_id = _get_user_id()
+            except Exception:
+                # If we can't get user_id from context, use default
+                user_id = agent_runtime.DEFAULT_USER_ID
+                logger.warning(f"⚠️ [Manual] Could not get user_id from context, using default: {user_id}")
+        
+        logger.info(f"🔧 [Manual] Manually adding MCP server '{name}' for user '{user_id}'")
+        
+        # Create a mock connection object structure
+        server_config = {
+            "name": name,
+            "url": url,
+            "headers": headers if headers else None,
+            "tools": []  # Will be populated when graph rebuilds
+        }
+        
+        # Add to storage
+        server_key = name.replace(" ", "")
+        add_mcp_server(server_key, server_config, user_id=user_id)
+        logger.info(f"✅ [Manual] Added MCP server '{name}' to storage for user '{user_id}'")
+        
+        # Trigger graph rebuild
+        try:
+            await agent_runtime.rebuild_graph(user_id=user_id)
+            logger.info(f"✅ [Manual] Graph rebuilt for user '{user_id}'")
+            return JSONResponse(content={
+                "status": "success",
+                "message": f"MCP server '{name}' added and graph rebuilt",
+                "user_id": user_id
+            })
+        except Exception as e:
+            logger.error(f"❌ [Manual] Failed to rebuild graph: {e}")
+            logger.exception("Full error traceback:")
+            return JSONResponse(status_code=500, content={
+                "status": "partial",
+                "message": f"MCP server '{name}' added to storage but graph rebuild failed",
+                "error": str(e),
+                "user_id": user_id
+            })
+    except Exception as e:
+        logger.error(f"❌ [Manual] Manual add endpoint error: {e}")
+        logger.exception("Full error traceback:")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 db_manager = DatabaseManager()
 logger = logging.getLogger(__name__)
 
@@ -155,15 +310,26 @@ async def on_startup():
     logger.info(
         "✅ [Main] Startup complete. Waiting for Chainlit to auto-reconnect MCP servers..."
     )
+    logger.info(
+        "✅ [Main] MCP connect handler (@cl.on_mcp_connect) is registered and ready"
+    )
 
 
 @cl.on_mcp_connect
 async def on_mcp(connection, session: ClientSession):
+    """
+    Handler called by Chainlit when an MCP server successfully connects.
+    
+    NOTE: This is ONLY called if Chainlit successfully establishes the connection.
+    If Chainlit fails to connect (e.g., authentication failure, network error),
+    this handler will NOT be called, and the server won't appear in the list.
+    """
     server_key = connection.name.replace(" ", "")
     user_id = _get_user_id()
 
     # Enhanced logging to debug multi-user issues
     logger.info(f"🔌 [Main] MCP connect request: server='{connection.name}', user='{user_id}'")
+    logger.info(f"🔍 [Main] Connection object: {type(connection)}, has __dict__: {hasattr(connection, '__dict__')}")
 
     # Log additional context for debugging
     try:
@@ -190,7 +356,13 @@ async def on_mcp(connection, session: ClientSession):
         return
 
     # List available tools
-    result = await session.list_tools()
+    try:
+        result = await session.list_tools()
+    except Exception as e:
+        logger.error(f"❌ [Main] Failed to list tools from '{connection.name}' for user '{user_id}': {e}")
+        logger.exception("Full error traceback:")
+        # Re-raise to let Chainlit handle the error
+        raise
 
     # Process tool metadata
     tools = []
@@ -224,6 +396,95 @@ async def on_mcp(connection, session: ClientSession):
     # CRITICAL: For stdio-based servers (like Code Formatter), store the Chainlit session
     # so agent.py can reuse it instead of trying to reconnect
     new_connection["chainlit_session"] = session
+    
+    # Extract headers from connection object for streamable-http servers
+    # Chainlit may store headers in different attributes, check common locations
+    headers = None
+    
+    # Log connection object structure for debugging (helpful for troubleshooting)
+    logger.info(f"🔍 [Main] Connection object type: {type(connection)}")
+    if hasattr(connection, '__dict__'):
+        logger.info(f"🔍 [Main] Connection object attributes: {list(connection.__dict__.keys())}")
+    if hasattr(connection, 'config'):
+        logger.info(f"🔍 [Main] Connection config type: {type(connection.config)}")
+        if isinstance(connection.config, dict):
+            logger.info(f"🔍 [Main] Connection config keys: {list(connection.config.keys())}")
+    
+    # Try multiple ways to extract headers
+    # Method 1: Direct headers attribute
+    if hasattr(connection, 'headers') and connection.headers:
+        headers = connection.headers
+        if isinstance(headers, dict):
+            logger.info(f"📋 [Main] Found headers in connection.headers for '{connection.name}': {list(headers.keys())}")
+        else:
+            logger.warning(f"⚠️ [Main] connection.headers exists but is not a dict: {type(headers)}")
+            headers = None
+    
+    # Method 2: Headers in config
+    if not headers and hasattr(connection, 'config') and isinstance(connection.config, dict):
+        if 'headers' in connection.config:
+            headers = connection.config['headers']
+            if isinstance(headers, dict):
+                logger.info(f"📋 [Main] Found headers in connection.config.headers for '{connection.name}': {list(headers.keys())}")
+            else:
+                logger.warning(f"⚠️ [Main] connection.config.headers exists but is not a dict: {type(headers)}")
+                headers = None
+        
+        # Method 3: Extract from nested mcpServers structure (config file format)
+        if not headers and 'mcpServers' in connection.config:
+            mcp_servers = connection.config.get('mcpServers', {})
+            if isinstance(mcp_servers, dict):
+                for server_name, server_config in mcp_servers.items():
+                    if isinstance(server_config, dict) and 'args' in server_config:
+                        # Look for --header arguments in args array
+                        args = server_config.get('args', [])
+                        header_dict = {}
+                        for i, arg in enumerate(args):
+                            if arg == '--header' and i + 1 < len(args):
+                                header_str = args[i + 1]
+                                if ':' in header_str:
+                                    key, value = header_str.split(':', 1)
+                                    header_dict[key.strip()] = value.strip()
+                        if header_dict:
+                            headers = header_dict
+                            logger.info(f"📋 [Main] Extracted headers from mcpServers args for '{connection.name}': {list(headers.keys())}")
+                            break
+    
+    # Method 4: Headers in new_connection dict (from __dict__.copy())
+    if not headers and isinstance(new_connection, dict):
+        if 'headers' in new_connection:
+            headers = new_connection['headers']
+            if isinstance(headers, dict):
+                logger.info(f"📋 [Main] Found headers in connection dict for '{connection.name}': {list(headers.keys())}")
+            else:
+                headers = None
+        elif 'config' in new_connection and isinstance(new_connection['config'], dict):
+            if 'headers' in new_connection['config']:
+                headers = new_connection['config']['headers']
+                if isinstance(headers, dict):
+                    logger.info(f"📋 [Main] Found headers in connection dict config for '{connection.name}': {list(headers.keys())}")
+                else:
+                    headers = None
+    
+    # Normalize header keys (ensure proper case for Authorization header)
+    if headers and isinstance(headers, dict):
+        # Convert all keys to proper HTTP header format
+        normalized_headers = {}
+        for k, v in headers.items():
+            # HTTP headers are case-insensitive, but some servers expect specific case
+            # Authorization header is commonly capitalized
+            if k.lower() == 'authorization':
+                normalized_headers['Authorization'] = str(v)
+            else:
+                normalized_headers[k] = str(v)
+        headers = normalized_headers
+    
+    # Store headers if found
+    if headers:
+        new_connection["headers"] = headers
+        logger.info(f"✅ [Main] Stored headers for '{connection.name}': {list(headers.keys())}")
+    else:
+        logger.info(f"ℹ️ [Main] No headers found for '{connection.name}' - connection may not require authentication")
 
     # Check if server already exists for this user (to avoid overwriting on Chainlit auto-reconnect)
     existing_server = get_mcp_server(server_key, user_id=user_id)
@@ -361,6 +622,9 @@ async def on_chat_start():
 async def main(message: cl.Message):
     session_id = cl.user_session.get("session_id")
     user_id = cl.user_session.get("user_id") or _get_user_id()
+    
+    # Log user_id for debugging
+    logger.info(f"👤 [Main] Processing message for user_id: '{user_id}'")
 
     # Get graph for THIS USER
     graph = await agent_runtime.get_graph(user_id=user_id)

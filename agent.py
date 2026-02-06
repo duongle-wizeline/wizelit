@@ -115,16 +115,20 @@ class AgentRuntime:
     Agent runtime that supports per-user graphs.
     Each user gets their own isolated graph with their own MCP server connections.
     """
-    
+
     # Default user ID for backward compatibility
     DEFAULT_USER_ID = "__default__"
-    
+
     def __init__(self) -> None:
         # Per-user storage: user_id -> data
         self._graphs: Dict[str, Any] = {}
         self._exit_stacks: Dict[str, AsyncExitStack] = {}
-        self._sessions: Dict[str, Dict[str, Any]] = {}  # user_id -> {server_name: session}
-        self._tool_sessions: Dict[str, Dict[str, Any]] = {}  # user_id -> {tool_name: session}
+        self._sessions: Dict[str, Dict[str, Any]] = (
+            {}
+        )  # user_id -> {server_name: session}
+        self._tool_sessions: Dict[str, Dict[str, Any]] = (
+            {}
+        )  # user_id -> {tool_name: session}
 
     async def ensure_ready(self, user_id: Optional[str] = None) -> None:
         uid = user_id or self.DEFAULT_USER_ID
@@ -135,7 +139,7 @@ class AgentRuntime:
     async def _rebuild_graph(self, user_id: Optional[str] = None) -> None:
         """Rebuild the graph with current tools from in-memory storage for a specific user"""
         uid = user_id or self.DEFAULT_USER_ID
-        
+
         # Only rebuild if graph doesn't exist yet for this user
         # If graph exists, we should not rebuild it here - use rebuild_graph() explicitly
         if uid in self._graphs and self._graphs[uid] is not None:
@@ -156,22 +160,30 @@ class AgentRuntime:
         tools_all = []
         seen_tool_names = set()  # Track tool names to prevent duplicates
 
-        async def connect_and_load(label: str, url: str):
+        async def connect_and_load(
+            label: str, url: str, headers: Optional[Dict[str, str]] = None
+        ):
             print(f"🔌 [Agent] Connecting to {label} at {url} ...")
+            if headers:
+                print(f"🔑 [Agent] Using headers: {list(headers.keys())}")
 
             # Detect transport type based on URL path
-            # Streamable-HTTP servers use /mcp endpoint, SSE servers use /sse endpoint
-            is_streamable_http = "/mcp" in url or url.endswith("/mcp")
-            is_sse = "/sse" in url or url.endswith("/sse")
+            # Streamable-HTTP servers use /mcp endpoint (or /mcp-server/http for n8n), SSE servers use /sse endpoint
+            is_streamable_http = (
+                "/mcp" in url.lower()
+                or url.lower().endswith("/mcp")
+                or "/mcp-server" in url.lower()
+            )
+            is_sse = "/sse" in url.lower() or url.lower().endswith("/sse")
 
             # Use streamable-http transport if URL indicates it
             if is_streamable_http:
                 print(f"ℹ️  [Agent] Using streamable-http transport for {label}")
 
                 try:
-                    # Use streamable-http client
+                    # Use streamable-http client with headers if provided
                     streamable_http = await exit_stack.enter_async_context(
-                        streamablehttp_client(url=url)
+                        streamablehttp_client(url=url, headers=headers)
                     )
                     read_stream, write_stream, get_session_id = streamable_http
                     session = await exit_stack.enter_async_context(
@@ -290,7 +302,14 @@ class AgentRuntime:
         try:
             # Get MCP servers from in-memory storage for THIS USER
             mcp_servers = get_mcp_servers(user_id=uid)
-            print(f"🔍 [Agent] Building graph for user '{uid}' with {len(mcp_servers)} MCP server(s)")
+            print(
+                f"🔍 [Agent] Building graph for user '{uid}' with {len(mcp_servers)} MCP server(s)"
+            )
+            if mcp_servers:
+                print(f"📋 [Agent] MCP servers for user '{uid}': {list(mcp_servers.keys())}")
+                for server_name, server_config in mcp_servers.items():
+                    has_headers = "headers" in server_config and server_config.get("headers")
+                    print(f"  - {server_name}: url={server_config.get('url', 'N/A')}, has_headers={bool(has_headers)}")
 
             for server in mcp_servers.values():
                 # IMPORTANT: Prefer URL-based connection over chainlit_session
@@ -299,7 +318,14 @@ class AgentRuntime:
                 # Only use chainlit_session for stdio-based servers that don't have a URL
                 if "url" in server and server["url"]:
                     # SSE or streamable-http connection via URL (ngrok, remote MCP servers)
-                    await connect_and_load(server["name"], server["url"])
+                    # Extract headers if available (for authenticated connections like n8n)
+                    headers = server.get("headers")
+                    if headers and isinstance(headers, dict):
+                        # Ensure headers are in the correct format (dict[str, str])
+                        headers = {str(k): str(v) for k, v in headers.items()}
+                    await connect_and_load(
+                        server["name"], server["url"], headers=headers
+                    )
                 elif "chainlit_session" in server and server["chainlit_session"]:
                     # stdio-based servers (like Code Formatter) - no URL, use Chainlit session
                     await load_from_chainlit_session(
@@ -328,7 +354,7 @@ class AgentRuntime:
             except Exception as e:
                 raise ConfigurationError(
                     "AWS Bedrock LLM initialization",
-                    f"Failed to initialize ChatBedrock with model_id={model_id}, region={region}. {str(e)}"
+                    f"Failed to initialize ChatBedrock with model_id={model_id}, region={region}. {str(e)}",
                 )
 
             try:
@@ -336,14 +362,23 @@ class AgentRuntime:
             except Exception as e:
                 raise GraphBuildError(str(e))
 
-            print(f"✅ [Agent] Graph rebuilt for user '{uid}' with {len(tools_all)} unique tools")
+            print(
+                f"✅ [Agent] Graph rebuilt for user '{uid}' with {len(tools_all)} unique tools"
+            )
 
-        except (MCPConnectionError, MCPToolLoadError, GraphBuildError, ConfigurationError):
+        except (
+            MCPConnectionError,
+            MCPToolLoadError,
+            GraphBuildError,
+            ConfigurationError,
+        ):
             # Re-raise custom exceptions as-is
             await exit_stack.aclose()
             raise
         except Exception as e:
-            print(f"❌ [Agent] Unexpected error during graph rebuild for user '{uid}': {e}")
+            print(
+                f"❌ [Agent] Unexpected error during graph rebuild for user '{uid}': {e}"
+            )
             await exit_stack.aclose()
             raise GraphBuildError(str(e))
 
@@ -357,7 +392,7 @@ class AgentRuntime:
     async def _do_rebuild_graph(self, user_id: Optional[str] = None) -> None:
         """Internal method that performs the actual rebuild for a user"""
         uid = user_id or self.DEFAULT_USER_ID
-        
+
         # Close existing MCP connections for this user if any
         if uid in self._graphs and self._graphs[uid] is not None:
             # Store old exit stack and sessions for this user
@@ -396,7 +431,9 @@ class AgentRuntime:
                             )
                 except Exception as e:
                     # Log but don't fail - connections might already be closed
-                    print(f"⚠️ [Agent] Error closing old exit stack for user '{uid}' (non-critical): {e}")
+                    print(
+                        f"⚠️ [Agent] Error closing old exit stack for user '{uid}' (non-critical): {e}"
+                    )
 
                 # Wait for async generator cleanup to complete
                 # This gives time for all async contexts to fully close
@@ -422,7 +459,9 @@ class AgentRuntime:
         uid = user_id or self.DEFAULT_USER_ID
         if uid in self._graphs:
             self._graphs[uid] = None
-        print(f"🔄 [Agent] Graph invalidated for user '{uid}' - will be rebuilt on next access")
+        print(
+            f"🔄 [Agent] Graph invalidated for user '{uid}' - will be rebuilt on next access"
+        )
 
     async def get_graph(self, user_id: Optional[str] = None) -> Any:
         uid = user_id or self.DEFAULT_USER_ID
@@ -436,14 +475,16 @@ class AgentRuntime:
         return computed_graph.get_graph().draw_mermaid()
 
     # Allow calling tools directly (for polling)
-    async def call_tool(self, name: str, arguments: Dict[str, Any], user_id: Optional[str] = None) -> Any:
+    async def call_tool(
+        self, name: str, arguments: Dict[str, Any], user_id: Optional[str] = None
+    ) -> Any:
         uid = user_id or self.DEFAULT_USER_ID
         user_tool_sessions = self._tool_sessions.get(uid, {})
-        
+
         if not user_tool_sessions:
             await self.ensure_ready(user_id=uid)
             user_tool_sessions = self._tool_sessions.get(uid, {})
-            
+
         session = user_tool_sessions.get(name)
         if not session:
             raise ValueError(
@@ -453,7 +494,10 @@ class AgentRuntime:
         # Check if session is still valid before calling
         # If connection was closed, we need to rebuild the graph
         try:
-            return await session.call_tool(name, arguments)
+            print(f"🔧 [Agent] Calling tool '{name}' for user '{uid}' with arguments: {arguments}")
+            result = await session.call_tool(name, arguments)
+            print(f"✅ [Agent] Tool '{name}' returned result (type: {type(result)})")
+            return result
         except Exception as e:
             error_msg = str(e).lower()
             if "closedresourceerror" in error_msg or "closed" in error_msg:
