@@ -125,8 +125,6 @@ async def test_mcp_connection(request: Request):
         "name": "n8n-mcp"
     }
     """
-    from fastapi import Response
-    from fastapi.responses import JSONResponse
     
     try:
         from mcp.client.streamable_http import streamablehttp_client
@@ -168,25 +166,6 @@ async def test_mcp_connection(request: Request):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-@cl.server.app.get("/api/user-id")
-async def get_current_user_id():
-    """
-    Get the current user ID. Useful for debugging and for adding MCP servers
-    for the correct user.
-    """
-    try:
-        user_id = _get_user_id()
-        return JSONResponse(content={
-            "user_id": user_id,
-            "source": "from_context"
-        })
-    except Exception as e:
-        return JSONResponse(status_code=500, content={
-            "error": str(e),
-            "default_user_id": agent_runtime.DEFAULT_USER_ID
-        })
-
-
 @cl.server.app.post("/api/mcp/manual-add")
 async def manual_add_mcp_server(request: Request):
     """
@@ -198,13 +177,8 @@ async def manual_add_mcp_server(request: Request):
     {
         "name": "n8n-mcp",
         "url": "https://andien-wl.app.n8n.cloud/mcp-server/http",
-        "headers": {"Authorization": "Bearer TOKEN"},
-        "user_id": "optional-user-id"  // If not provided, will try to get from context
+        "headers": {"Authorization": "Bearer TOKEN"}
     }
-    
-    Note: If called via curl (no Chainlit context), you should provide user_id
-    or it will use the default. To find your actual user_id, first call GET /api/user-id
-    from within the Chainlit app (in browser console or via a message).
     """
     
     try:
@@ -327,22 +301,7 @@ async def on_mcp(connection, session: ClientSession):
     server_key = connection.name.replace(" ", "")
     user_id = _get_user_id()
 
-    # Enhanced logging to debug multi-user issues
-    logger.info(f"🔌 [Main] MCP connect request: server='{connection.name}', user='{user_id}'")
-    logger.info(f"🔍 [Main] Connection object: {type(connection)}, has __dict__: {hasattr(connection, '__dict__')}")
-
-    # Log additional context for debugging
-    try:
-        if hasattr(cl, 'context') and cl.context and hasattr(cl.context, 'session'):
-            ctx_session = cl.context.session
-            user_info = "no_user"
-            if hasattr(ctx_session, 'user') and ctx_session.user:
-                user_info = f"identifier={getattr(ctx_session.user, 'identifier', 'N/A')}, id={getattr(ctx_session.user, 'id', 'N/A')}"
-            client_id = getattr(ctx_session, 'client_id', 'N/A')
-            session_id = getattr(ctx_session, 'id', 'N/A')
-            logger.info(f"🔍 [Main] Context details: client_id={client_id}, session_id={session_id}, user=({user_info})")
-    except Exception as e:
-        logger.debug(f"Could not log context details: {e}")
+    logger.info(f"🔌 [Main] MCP connect: server='{connection.name}', user='{user_id}'")
 
     # Check if this server was recently removed for THIS USER (in cooldown period)
     # The cooldown prevents Chainlit auto-reconnect from immediately re-adding removed servers
@@ -380,13 +339,7 @@ async def on_mcp(connection, session: ClientSession):
         if t.meta and isinstance(t.meta, dict):
             if "wizelit_response_handling" in t.meta:
                 tool_dict["response_handling"] = t.meta["wizelit_response_handling"]
-                logger.info(
-                    f"✅ [Main] Found response_handling for {t.name}: {t.meta['wizelit_response_handling']}"
-                )
-            else:
-                logger.debug(
-                    f"⚠️ [Main] No response_handling in meta for {t.name}. Meta keys: {list(t.meta.keys())}"
-                )
+                logger.debug(f"Found response_handling for {t.name}")
 
         tools.append(tool_dict)
 
@@ -401,33 +354,18 @@ async def on_mcp(connection, session: ClientSession):
     # Chainlit may store headers in different attributes, check common locations
     headers = None
     
-    # Log connection object structure for debugging (helpful for troubleshooting)
-    logger.info(f"🔍 [Main] Connection object type: {type(connection)}")
-    if hasattr(connection, '__dict__'):
-        logger.info(f"🔍 [Main] Connection object attributes: {list(connection.__dict__.keys())}")
-    if hasattr(connection, 'config'):
-        logger.info(f"🔍 [Main] Connection config type: {type(connection.config)}")
-        if isinstance(connection.config, dict):
-            logger.info(f"🔍 [Main] Connection config keys: {list(connection.config.keys())}")
-    
     # Try multiple ways to extract headers
     # Method 1: Direct headers attribute
     if hasattr(connection, 'headers') and connection.headers:
         headers = connection.headers
-        if isinstance(headers, dict):
-            logger.info(f"📋 [Main] Found headers in connection.headers for '{connection.name}': {list(headers.keys())}")
-        else:
-            logger.warning(f"⚠️ [Main] connection.headers exists but is not a dict: {type(headers)}")
+        if not isinstance(headers, dict):
             headers = None
     
     # Method 2: Headers in config
     if not headers and hasattr(connection, 'config') and isinstance(connection.config, dict):
         if 'headers' in connection.config:
             headers = connection.config['headers']
-            if isinstance(headers, dict):
-                logger.info(f"📋 [Main] Found headers in connection.config.headers for '{connection.name}': {list(headers.keys())}")
-            else:
-                logger.warning(f"⚠️ [Main] connection.config.headers exists but is not a dict: {type(headers)}")
+            if not isinstance(headers, dict):
                 headers = None
         
         # Method 3: Extract from nested mcpServers structure (config file format)
@@ -447,23 +385,18 @@ async def on_mcp(connection, session: ClientSession):
                                     header_dict[key.strip()] = value.strip()
                         if header_dict:
                             headers = header_dict
-                            logger.info(f"📋 [Main] Extracted headers from mcpServers args for '{connection.name}': {list(headers.keys())}")
                             break
     
     # Method 4: Headers in new_connection dict (from __dict__.copy())
     if not headers and isinstance(new_connection, dict):
         if 'headers' in new_connection:
             headers = new_connection['headers']
-            if isinstance(headers, dict):
-                logger.info(f"📋 [Main] Found headers in connection dict for '{connection.name}': {list(headers.keys())}")
-            else:
+            if not isinstance(headers, dict):
                 headers = None
         elif 'config' in new_connection and isinstance(new_connection['config'], dict):
             if 'headers' in new_connection['config']:
                 headers = new_connection['config']['headers']
-                if isinstance(headers, dict):
-                    logger.info(f"📋 [Main] Found headers in connection dict config for '{connection.name}': {list(headers.keys())}")
-                else:
+                if not isinstance(headers, dict):
                     headers = None
     
     # Normalize header keys (ensure proper case for Authorization header)
@@ -483,15 +416,11 @@ async def on_mcp(connection, session: ClientSession):
     if headers:
         new_connection["headers"] = headers
         logger.info(f"✅ [Main] Stored headers for '{connection.name}': {list(headers.keys())}")
-    else:
-        logger.info(f"ℹ️ [Main] No headers found for '{connection.name}' - connection may not require authentication")
 
     # Check if server already exists for this user (to avoid overwriting on Chainlit auto-reconnect)
     existing_server = get_mcp_server(server_key, user_id=user_id)
     if existing_server:
-        logger.info(
-            f"ℹ️ [Main] MCP server '{connection.name}' already in storage for user '{user_id}', updating"
-        )
+        logger.debug(f"MCP server '{connection.name}' already in storage for user '{user_id}', updating")
 
     add_mcp_server(server_key, new_connection, user_id=user_id)
     logger.info(f"✅ [Main] Stored MCP server '{connection.name}' for user '{user_id}'")
@@ -504,9 +433,7 @@ async def on_mcp(connection, session: ClientSession):
     # CRITICAL: Rebuild the graph so it includes the newly added tools
     # The graph is cached and won't automatically pick up new tools
     # Add a small delay to let Chainlit finish its session setup before rebuilding
-    logger.info(
-        f"🔄 [Main] Scheduling graph rebuild to include new tools from '{connection.name}'..."
-    )
+    logger.debug(f"Scheduling graph rebuild to include new tools from '{connection.name}'")
 
     # Use asyncio.create_task to run rebuild in background after a short delay
     # This allows Chainlit to complete its session setup without blocking
@@ -553,7 +480,7 @@ async def on_mcp_disconnect(name: str, session: ClientSession):
 
     # CRITICAL: Rebuild the graph after removing tools
     # Run rebuild in background to avoid blocking
-    logger.info(f"🔄 [Main] Scheduling graph rebuild for user '{user_id}' after removing '{name}'...")
+    logger.debug(f"Scheduling graph rebuild for user '{user_id}' after removing '{name}'")
 
     # Capture user_id for the closure
     rebuild_user_id = user_id
@@ -595,21 +522,14 @@ async def on_chat_start():
     mcp_servers = get_mcp_servers(user_id=user_id)
 
     # Log storage state for debugging multi-user issues
-    from utils.mcp_storage import get_all_user_ids, get_user_count
-    total_users = get_user_count()
-    all_users = get_all_user_ids()
-    logger.info(f"📊 [Main] Storage state: {total_users} user(s) with MCP servers: {all_users}")
-    logger.info(f"📊 [Main] User '{user_id}' has {len(mcp_servers)} MCP server(s): {list(mcp_servers.keys())}")
+    logger.debug(f"📊 [Main] User '{user_id}' has {len(mcp_servers)} MCP server(s): {list(mcp_servers.keys())}")
 
-    if mcp_servers:
+        if mcp_servers:
         tool_count = sum(len(s.get("tools", [])) for s in mcp_servers.values())
         server_list = ", ".join(f"`{name}`" for name in mcp_servers.keys())
-        # Show user ID (truncated) for debugging multi-user isolation
-        user_display = user_id[:20] + "..." if len(user_id) > 20 else user_id
         await cl.Message(
             content=f"🔧 **{len(mcp_servers)} MCP Server(s) Connected:** {server_list}\n"
-            f"📦 **{tool_count} tools** available.\n"
-            f"🔑 *User: {user_display}*"
+            f"📦 **{tool_count} tools** available."
         ).send()
     else:
         await cl.Message(
@@ -622,9 +542,6 @@ async def on_chat_start():
 async def main(message: cl.Message):
     session_id = cl.user_session.get("session_id")
     user_id = cl.user_session.get("user_id") or _get_user_id()
-    
-    # Log user_id for debugging
-    logger.info(f"👤 [Main] Processing message for user_id: '{user_id}'")
 
     # Get graph for THIS USER
     graph = await agent_runtime.get_graph(user_id=user_id)

@@ -163,9 +163,11 @@ class AgentRuntime:
         async def connect_and_load(
             label: str, url: str, headers: Optional[Dict[str, str]] = None
         ):
-            print(f"🔌 [Agent] Connecting to {label} at {url} ...")
+            print(f"🔌 [Agent] Connecting to {label} at {url}")
             if headers:
-                print(f"🔑 [Agent] Using headers: {list(headers.keys())}")
+                print(
+                    f"🔑 [Agent] Using authentication headers: {list(headers.keys())}"
+                )
 
             # Detect transport type based on URL path
             # Streamable-HTTP servers use /mcp endpoint (or /mcp-server/http for n8n), SSE servers use /sse endpoint
@@ -178,7 +180,7 @@ class AgentRuntime:
 
             # Use streamable-http transport if URL indicates it
             if is_streamable_http:
-                print(f"ℹ️  [Agent] Using streamable-http transport for {label}")
+                pass  # Using streamable-http transport
 
                 try:
                     # Use streamable-http client with headers if provided
@@ -224,7 +226,7 @@ class AgentRuntime:
 
             # Default to SSE connection for other servers
             if not is_sse:
-                print(f"ℹ️  [Agent] Using SSE transport for {label} (default)")
+                pass  # Using SSE transport
 
             try:
                 sse = await exit_stack.enter_async_context(
@@ -305,11 +307,6 @@ class AgentRuntime:
             print(
                 f"🔍 [Agent] Building graph for user '{uid}' with {len(mcp_servers)} MCP server(s)"
             )
-            if mcp_servers:
-                print(f"📋 [Agent] MCP servers for user '{uid}': {list(mcp_servers.keys())}")
-                for server_name, server_config in mcp_servers.items():
-                    has_headers = "headers" in server_config and server_config.get("headers")
-                    print(f"  - {server_name}: url={server_config.get('url', 'N/A')}, has_headers={bool(has_headers)}")
 
             for server in mcp_servers.values():
                 # IMPORTANT: Prefer URL-based connection over chainlit_session
@@ -494,10 +491,7 @@ class AgentRuntime:
         # Check if session is still valid before calling
         # If connection was closed, we need to rebuild the graph
         try:
-            print(f"🔧 [Agent] Calling tool '{name}' for user '{uid}' with arguments: {arguments}")
-            result = await session.call_tool(name, arguments)
-            print(f"✅ [Agent] Tool '{name}' returned result (type: {type(result)})")
-            return result
+            return await session.call_tool(name, arguments)
         except Exception as e:
             error_msg = str(e).lower()
             if "closedresourceerror" in error_msg or "closed" in error_msg:
