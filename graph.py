@@ -49,7 +49,7 @@ async def generate_tools_guides(tools: Sequence[BaseTool] | None = None) -> str:
         n8n_response = await n8n_search_workflows.ainvoke({})
         response_content = json.loads(n8n_response[0].get('text', '{}'))
         workflows = response_content.get('data', [])
-        print(f"\nN8N WORKFLOWS EXTRACTED: {workflows}\n")
+        # print(f"\nN8N WORKFLOWS EXTRACTED: {workflows}\n")
 
         if workflows:
             guides += "\nThis is the list of N8N workflows:\n"
@@ -57,7 +57,7 @@ async def generate_tools_guides(tools: Sequence[BaseTool] | None = None) -> str:
             for workflow in workflows:
                 ncount += 1
                 guides += f"{ncount}. Use tool `{workflow['name']}` - id `{workflow['id']}` - for purpose: {workflow.get('description')}\n"
-            guides += "IMPORTANT: To invoke an N8N workflow, use the tool \"execute_workflow\" with the workflow's ID in the tool call.\n"
+            guides += "IMPORTANT: To invoke an N8N workflow, use the tool \"execute_workflow\" with the workflow's ID and inputs object with format: {{\"type\": \"webhook\", \"webhookData\": {{\"body\": {{...}}}}}}\n"
 
     print(f"\nGENERATED PROMPT GUIDES:\n{guides}\n")
 
