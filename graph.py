@@ -47,9 +47,8 @@ async def generate_tools_guides(tools: Sequence[BaseTool] | None = None) -> str:
 
     if n8n_search_workflows:
         n8n_response = await n8n_search_workflows.ainvoke({})
-
-        data = json.loads(n8n_response[0].get('text', '{}'))
-        workflows = data.get('structuredContent', {}).get('data', [])
+        response_content = json.loads(n8n_response[0].get('text', '{}'))
+        workflows = response_content.get('data', [])
         print(f"\nN8N WORKFLOWS EXTRACTED: {workflows}\n")
 
         if workflows:
@@ -59,6 +58,8 @@ async def generate_tools_guides(tools: Sequence[BaseTool] | None = None) -> str:
                 ncount += 1
                 guides += f"{ncount}. Use tool `{workflow['name']}` - id `{workflow['id']}` - for purpose: {workflow.get('description')}\n"
             guides += "IMPORTANT: To invoke an N8N workflow, use the tool \"execute_workflow\" with the workflow's ID in the tool call.\n"
+
+    print(f"\nGENERATED PROMPT GUIDES:\n{guides}\n")
 
     return get_prompt_template(guides)
 
@@ -120,7 +121,7 @@ def build_graph(
     tool_list = list(tools or [])
     llm_with_tools = llm.bind_tools(tool_list) if tool_list else llm
     memory = MemorySaver()
-    system_message_content = asyncio.run(generate_tools_guides(tools=tools))
+    prompt_guides = asyncio.run(generate_tools_guides(tools=tools))
 
     def truncate_history(messages: list) -> list:
         """
