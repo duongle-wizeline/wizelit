@@ -217,19 +217,6 @@ class AgentRuntime:
                     raise MCPToolLoadError(
                         label, "Server connected but returned no tools"
                     )
-
-                if "n8n" in label.lower():
-                    print(f"ℹ️  [Agent] Detected N8N MCP server at {label}")
-                    n8n_workflows = []
-                    for tool in tools or []:
-                        if tool.name == "search_workflows":
-                            n8n_response = await tool.ainvoke({})
-                            data = json.loads(n8n_response[0].get('text', '{}'))
-                            n8n_workflows = data.get('structuredContent', {}).get('data', [])
-
-                    if n8n_workflows:
-                        tools.extend(n8n_workflows)
-                        print(f"✅ [Agent] Loaded {len(n8n_workflows)} workflows from N8N MCP server at {label}")
             except Exception as e:
                 if isinstance(e, MCPToolLoadError):
                     raise
@@ -266,19 +253,6 @@ class AgentRuntime:
                 print(
                     f"✅ [Agent] Tools Loaded from {label}: {[t.name for t in tools]}"
                 )
-
-                if "n8n" in label.lower():
-                    print(f"ℹ️  [Agent] Detected N8N MCP server at {label}")
-                    n8n_workflows = []
-                    for tool in tools or []:
-                        if tool.name == "search_workflows":
-                            n8n_response = await tool.ainvoke({})
-                            data = json.loads(n8n_response[0].get('text', '{}'))
-                            n8n_workflows = data.get('structuredContent', {}).get('data', [])
-
-                    if n8n_workflows:
-                        tools.extend(n8n_workflows)
-                        print(f"✅ [Agent] Loaded {len(n8n_workflows)} workflows from N8N MCP server at {label}")
 
                 # Add tools, skipping duplicates
                 for t in tools:

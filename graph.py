@@ -59,8 +59,6 @@ async def generate_tools_guides(tools: Sequence[BaseTool] | None = None) -> str:
                 guides += f"{ncount}. Use tool `{workflow['name']}` - id `{workflow['id']}` - for purpose: {workflow.get('description')}\n"
             guides += "IMPORTANT: To invoke an N8N workflow, use the tool \"execute_workflow\" with the workflow's ID and inputs object with format: {{\"type\": \"webhook\", \"webhookData\": {{\"body\": {{...}}}}}}\n"
 
-    print(f"\nGENERATED PROMPT GUIDES:\n{guides}\n")
-
     return get_prompt_template(guides)
 
 
@@ -1008,7 +1006,7 @@ def build_graph(
         # Tool outputs are already shown to the user, so LLM should just use them for decision-making
         if tool_messages and docs_content and docs_content.strip():
             system_message_content = (
-                f"{prompt_template}"
+                f"{prompt_guides}"
                 f"\n\nCRITICAL INSTRUCTIONS FOR TOOL RESULTS:\n"
                 f"- Tool results have already been shown to the user\n"
                 f"- Use the tool results to decide your next action:\n"
@@ -1020,7 +1018,7 @@ def build_graph(
                 f"\nTOOL RESULTS (for reference):\n{docs_content}"
             )
         else:
-            system_message_content = prompt_template
+            system_message_content = get_prompt_template("")
 
         print(f"\n🧠 [Graph] System Prompt:\n{system_message_content}\n")
 
@@ -1321,6 +1319,13 @@ def _stringify_tool_message(message) -> str:
     # Handle MCP format: [{'type': 'text', 'text': 'value'}]
     if isinstance(content, list) and len(content) > 0:
         first_item = content[0]
+
+        if getattr(message, "name", None) == "execute_workflow":
+            workflow_output = json.loads(content[0]["text"])
+            workflow_message = workflow_output["result"]["runData"]["Respond to Webhook"][0]["data"]["main"][0][0]["json"]["output"]
+            print(f"🔍 [Graph] Extract N8N workflow result: {workflow_message}")
+            return str(workflow_message)
+
         if isinstance(first_item, dict):
             # Try 'text' key first (MCP format)
             if "text" in first_item:
@@ -1338,8 +1343,6 @@ def _stringify_tool_message(message) -> str:
 
     # For dict or other types, convert to JSON string
     if isinstance(content, (dict, list)):
-        import json
-
         return json.dumps(content, indent=2)
 
     return str(content)
